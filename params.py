@@ -1,44 +1,38 @@
 import argparse
+import os
 
 
 def get_parameters():
     parser = argparse.ArgumentParser("Boundary Unlearning")
 
-    # this is always boundary shrink
-    parser.add_argument('--method', type=str, default='boundary_shrink',
-                        choices=['boundary_shrink', 'boundary_expanding'], help='unlearning method')
-    
-    
     # which dataset to use
-    # TODO figure out why VIT is here and remove if not going to break anything
-    parser.add_argument('--data_name', type=str, default='cifar10', choices=['mnist', 'cifar10', 'resnet', 'vit', 'open_source', 'fundus_3_class', 'oct_4_class', 'oculoplastic',\
+    parser.add_argument('--data_name', type=str, default='cifar10', choices=['cifar10', 'cifar100', 'resnet', 'vit', 'open_source', 'fundus_3_class', 'oct_4_class', 'oculoplastic',\
      'dr_grade', 'mri', 'ultrasound', 'cxr', 'svhn', 'fashionmnist', 'medmnist'],
-                        help='dataset, mnist or cifar10')
-    
+                        help='dataset, e.g. cifar10, cifar100, fashionmnist')
+
     # Which model to use
-    #TODO if data_name is cifar, then have to use AllCNN
-    parser.add_argument('--model_name', type=str, default='resnet', choices=['MNISTNet', 'AllCNN', 'resnet', 'vit'], help='model name')
-    
+    parser.add_argument('--model_name', type=str, default='AllCNN', choices=['AllCNN', 'resnet', 'resnet50', 'vit'], help='model name')
+
     # Model settings
     parser.add_argument('--optim_name', type=str, default='sgd', choices=['sgd', 'adam'], help='optimizer name')
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
     parser.add_argument('--epoch', type=int, default=50, help='training epoch')
-    
-    
+
+
     parser.add_argument('--dataset_dir', type=str, default='./data', help='dataset directory')
     parser.add_argument('--checkpoint_dir', type=str, default='./model_checkpoints',
                         help='checkpoints directory')
-    
+
     parser.add_argument('--do_unlearning', action='store_true', help='Only unlearning')
 
     # set train, retrain, or unlearn. Do in separate steps for easier experimentation
     parser.add_argument('--retrain_only', action='store_true', help='retrain dropping a new class')
     parser.add_argument('--train', action='store_true', help='Train model from scratch')
 
-    
-    # args for removal
-    parser.add_argument('--sgld', action='store_true', help='SGLD shrinkage')
-    parser.add_argument('--closest_points', action='store_true', help='do a closest point experiment') 
+    # Fraction of the training set held out for validation (used for model
+    # selection instead of leaking test-set decisions into training).
+    parser.add_argument('--val_fraction', type=float, default=0.1, help='fraction of training set to use for validation')
+
     parser.add_argument('--run_sota', action='store_true', help='run sota method from chen et al')
     parser.add_argument('--specific_settings', action='store_true', help='run unlearning with specific setting ')
 
@@ -51,24 +45,20 @@ def get_parameters():
 
     # training params
     parser.add_argument('--batch_size', type=int, default=16, help='batch size')
-    parser.add_argument('--evaluation', action='store_true')
-    parser.add_argument('--extra_exp', action='store_true')
 
 
     # model paths for unlearning
     parser.add_argument('--original_model', type=str, help='path to original model')
     parser.add_argument('--retrain_model', type=str, help='path to retrain model')
-    
-    
+
+
     # algorithm args
     parser.add_argument('--use_linfpgd', action='store_true', help='use linfpgd- only for unlearning ViT')
     parser.add_argument('--scaling', type=str, default='None', choices=['None', 'inverse', 'exponential_decay', 'linear_decay'], help='lambda scaling method')
 
-    parser.add_argument('--gpu_id', type=int,default = 0, help='which GPU to use') 
+    parser.add_argument('--gpu_id', type=int,default = 0, help='which GPU to use')
     parser.add_argument('--gamma', type=float, default = 0)
     parser.add_argument('--lamda', type=float, default = 0)
-    parser.add_argument('--dist', type=str)
-    parser.add_argument('--relearn', action='store_true', help='run RElearning experiment on unlearned model ')
     parser.add_argument('--name', type=str, default = 'placeholder')
 
     #params for embedding experiments
@@ -91,23 +81,81 @@ def get_parameters():
     parser.add_argument('--percent_to_forget', type=float,  default =1)
     parser.add_argument('--selective_unlearn', action='store_true', help='toggle whether or not to do selective unlearning experiments')
 
-    
+    # --- GEAR contrastive-loss (CL) arguments ---------------------------------
+    # These feed gear.py's feature-space contrastive/alignment losses, added
+    # alongside boundary-shrinkage unlearning in Section 4 of the migration.
+    parser.add_argument('--feature_contrastive', action='store_true', help='enable feature space contrastive losses during unlearning')
+    parser.add_argument('--feature_align_weight', type=float, default=0.0, help='weight for retain to original feature alignment loss')
+    parser.add_argument('--retain_forget_weight', type=float, default=0.0, help='weight for retain forget cosine similarity loss')
+    parser.add_argument('--forget_forget_weight', type=float, default=0.0, help='weight for forget forget cosine similarity loss')
+
+    # gamma_rep scales the combined contrastive/representation loss (CL+ES);
+    # remain_reg (above) separately scales the plain retain cross-entropy loss.
+    parser.add_argument('--gamma_rep', type=float, default=1.0,
+                        help='weight on contrastive/representation loss. Controls stability regularization strength.')
+
+    parser.add_argument('--target_layer', type=str, default='9',
+                        help='Layer for contrastive loss. Use "9" for AllCNN, "layer4" for ResNet-50, '
+                             '"all" for multi-layer (layer1+layer2+layer3+layer4) on ResNet-50.')
+
+    # random seed for reproducibility across runs
+    parser.add_argument('--seed', type=int, default=42,
+                        help='random seed for reproducibility. Set different values for multi-seed experiments.')
+
+    # --- ES (entanglement-score) arguments -----------------------------------
+    parser.add_argument('--use_entanglement_weighting', action='store_true',
+                        help='Enable entanglement-score weighting for the retain-forget loss (CL+ES). '
+                             'Off by default.')
+    parser.add_argument('--centroid_refresh_interval', type=int, default=None,
+                        help='How many training steps between retain-centroid refreshes. '
+                             'Default: one epoch worth of steps (len(train_forget_loader)).')
+    parser.add_argument('--cl_warmup_steps', type=int, default=0,
+                        help='Steps to linearly ramp gamma_rep from 0 to its target value '
+                             'at the start of training. 0 (default) disables the ramp.')
+
+    parser.add_argument('--poison_epoch', type=int, default=10,
+                        help='number of epochs for the unlearning poison phase')
+
     args = parser.parse_args()
 
+    def require_arg(arg_name, condition, reason):
+        if condition and not getattr(args, arg_name):
+            parser.error(f"--{arg_name} is required when {reason}")
+
+    def require_existing_path(arg_name):
+        path = getattr(args, arg_name)
+        if path and not os.path.exists(path):
+            parser.error(f"--{arg_name} points to a missing file: {path}")
 
     if args.do_unlearning is False:
-        if any([args.sgld, args.closest_points, args.run_sota, args.specific_settings]):
-            raise ValueError("SGLD, closest_points, run_sota, and specific_setting can only be set if --do_unlearning is true")
+        if any([args.run_sota, args.specific_settings]):
+            raise ValueError("run_sota and specific_settings can only be set if --do_unlearning is true")
 
+    VALID_PAIRINGS = {
+        'cifar10':      ['AllCNN'],
+        'cifar100':     ['resnet', 'resnet50'],
+        'fashionmnist': ['AllCNN'],
+    }
+    if args.data_name in VALID_PAIRINGS:
+        allowed = VALID_PAIRINGS[args.data_name]
+        if args.model_name not in allowed:
+            raise ValueError(
+                f"--data_name '{args.data_name}' requires --model_name in {allowed}, "
+                f"got '{args.model_name}'"
+            )
 
-    # if args.do_unlearning:
-    #     if not args.original_model:
-    #         raise ValueError("If --unlearn_only is true, --original_model must be defined")
-    #     if not args.retrain_model:
-    #         raise ValueError("If --unlearn_only is true, --retrain_model must be defined")
+    require_arg('original_model', args.retrain_only, "--retrain_only is set")
+    require_arg('original_model', not args.train and not args.retrain_only and not args.tsne_embeddings,
+                "loading checkpoints instead of training from scratch")
+    require_arg('retrain_model', not args.train and not args.retrain_only and not args.tsne_embeddings,
+                "loading checkpoints instead of training from scratch")
 
-    if args.data_name == 'cifar10' and args.model_name != 'AllCNN':
-        raise ValueError("If --data_name is 'cifar10', --model_name must be 'AllCNN'")
+    require_arg('original_model', args.tsne_embeddings, "--tsne_embeddings is set")
+    require_arg('retrain_model', args.tsne_embeddings, "--tsne_embeddings is set")
+    require_arg('unlearn_model', args.tsne_embeddings, "--tsne_embeddings is set")
+    require_arg('embeddings_name', args.tsne_embeddings, "--tsne_embeddings is set")
 
+    for path_arg in ('original_model', 'retrain_model', 'unlearn_model', 'good_forget', 'good_remain'):
+        require_existing_path(path_arg)
 
     return args

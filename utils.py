@@ -13,7 +13,6 @@ from medmnist import INFO
 def seed_torch(seed=2022):
     np.random.seed(seed)
     # os.environ['PYTHONHASHSEED'] = str(seed)
-    np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
@@ -111,12 +110,14 @@ def set_num_classes(args, dataset):
         num_classes = 4
     elif args.data_name == 'medmnist':
         num_classes = 9
+    elif args.data_name == 'cifar100':
+        num_classes = 100
     else:
         num_classes = 10
 
     if args.data_name == 'svhn':
-        num_classes = 10  
-        idx_to_class = {i: str(i) for i in range(10)}  
+        num_classes = 10
+        idx_to_class = {i: str(i) for i in range(10)}
     elif args.data_name == 'medmnist':
         info = INFO['pathmnist']
         num_classes = len(info['label'])

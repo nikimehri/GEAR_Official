@@ -2,55 +2,11 @@ from torch import nn
 import torch
 from torchvision.models import resnet50, ResNet50_Weights
 
-# Below methods to claculate input featurs to the FC layer
-# and weight initialization for CNN model is based on the below github repo
-# Based on :https://github.com/Lab41/cyphercat/blob/master/Utils/models.py
-
-def size_conv(size, kernel, stride=1, padding=0):
-    out = int(((size - kernel + 2 * padding) / stride) + 1)
-    return out
-
-
-def size_max_pool(size, kernel, stride=None, padding=0):
-    if stride == None:
-        stride = kernel
-    out = int(((size - kernel + 2 * padding) / stride) + 1)
-    return out
-
-
-# Calculate in_features for FC layer in Shadow Net
-def calc_feat_linear_cifar(size):
-    feat = size_conv(size, 3, 1, 1)
-    feat = size_max_pool(feat, 2, 2)
-    feat = size_conv(feat, 3, 1, 1)
-    out = size_max_pool(feat, 2, 2)
-    return out
-
-
-# Calculate in_features for FC layer in Shadow Net
-def calc_feat_linear_mnist(size):
-    feat = size_conv(size, 5, 1)
-    feat = size_max_pool(feat, 2, 2)
-    feat = size_conv(feat, 5, 1)
-    out = size_max_pool(feat, 2, 2)
-    return out
-
-
-# Parameter Initialization
-def init_params(m):
-    if isinstance(m, nn.Conv2d):
-        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-        if m.bias is not None:
-            nn.init.zeros_(m.bias)
-    elif isinstance(m, nn.BatchNorm2d):
-        nn.init.constant_(m.weight, 1)
-        nn.init.zeros_(m.bias)
-    elif isinstance(m, nn.Linear):
-        nn.init.xavier_normal_(m.weight.data)
-        nn.init.zeros_(m.bias)
-
 
 class Identity(nn.Module):
+    """No-op passthrough module (stands in for a disabled Dropout layer, or for
+    CustomResNet's maxpool when using the CIFAR-friendly stem)."""
+
     def __init__(self):
         super(Identity, self).__init__()
 
@@ -59,6 +15,8 @@ class Identity(nn.Module):
 
 
 class Flatten(nn.Module):
+    """Reshapes a [B, ...] tensor down to [B, -1]."""
+
     def __init__(self):
         super(Flatten, self).__init__()
 
@@ -67,6 +25,9 @@ class Flatten(nn.Module):
 
 
 class Conv(nn.Sequential):
+    """A Conv2d/ConvTranspose2d block with optional BatchNorm and activation.
+    Auto-computes 'same'-style padding for odd kernel sizes if none is given."""
+
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=None, output_padding=0,
                  activation_fn=nn.ReLU, batch_norm=True, transpose=False):
         if padding is None:
@@ -84,11 +45,11 @@ class Conv(nn.Sequential):
         super(Conv, self).__init__(*model)
 
 
-
-
-
 class AllCNN(nn.Module):
-    def __init__(self, n_channels=3, num_classes=10, dropout=False, filters_percentage=1., size = 32, batch_norm=True):
+    """A small all-convolutional network (no fully-connected layers except the
+    final classifier), used for CIFAR-10/FashionMNIST/SVHN/MedMNIST."""
+
+    def __init__(self, n_channels=3, num_classes=10, dropout=False, filters_percentage=1., size=32, batch_norm=True):
         super(AllCNN, self).__init__()
         n_filter1 = int(size*3 * filters_percentage)
         n_filter2 = int(size*6 * filters_percentage)
@@ -109,23 +70,53 @@ class AllCNN(nn.Module):
         self.classifier = nn.Sequential(
             nn.Linear(n_filter2, num_classes),
         )
-        # self.
 
     def forward(self, x):
         features = self.features(x)
         output = self.classifier(features)
         return output
 
+    def get_embedding(self, x):
+        """Returns the final (pre-classifier) feature vector, used for t-SNE
+        plots and whole-model representation comparisons."""
+        x = self.features(x)
+        return x
 
+    def forward_with_features(self, x, capture_layers=None):
+        """Runs the forward pass one feature layer at a time so intermediate
+        activations can be captured by integer index (self.features has 12
+        children, 0-11; index 11 is the final flattened embedding). This is
+        what lets gear.py compute contrastive/entanglement losses on features
+        from any layer, not just the final embedding."""
+        if capture_layers is None:
+            capture_layers = [11]
+        activations = {}
 
+        for i, layer in enumerate(self.features):
+            x = layer(x)
+            if i in capture_layers:
+                activations[i] = x
+
+        logits = self.classifier(x)
+        return logits, activations
 
 
 class CustomResNet(nn.Module):
-    def __init__(self, num_classes):
+    """A ResNet-50 backbone (pretrained on ImageNet) with a custom classifier
+    head. Set cifar_stem=True when training on small (e.g. 32x32 CIFAR) images
+    — the default ImageNet stem (7x7 stride-2 conv + maxpool) downsamples too
+    aggressively for small inputs, so it's swapped for a 3x3 stride-1 conv with
+    no maxpool."""
+
+    def __init__(self, num_classes, cifar_stem=False):
         super(CustomResNet, self).__init__()
         self.resnet_base = resnet50(weights=ResNet50_Weights.DEFAULT)
         num_ftrs = self.resnet_base.fc.in_features
-        self.resnet_base.fc = nn.Identity()  
+        self.resnet_base.fc = nn.Identity()
+
+        if cifar_stem:
+            self.resnet_base.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+            self.resnet_base.maxpool = nn.Identity()
 
         self._classifier = nn.Sequential(
             nn.Dropout(0.5),
@@ -142,14 +133,48 @@ class CustomResNet(nn.Module):
         """Gets the classifier part of the network."""
         return self._classifier
 
+    @classifier.setter
+    def classifier(self, new_classifier):
+        """Allows replacing the classifier head in place (e.g. ensemble.py
+        grafts a differently-trained model's classifier onto this backbone).
+        Without this setter, assigning to .classifier raises AttributeError,
+        since a plain @property has no default setter."""
+        self._classifier = new_classifier
+
     def forward(self, x):
         x = self.resnet_base(x)
-        x = torch.flatten(x, 1)  
+        x = torch.flatten(x, 1)
         x = self._classifier(x)
         return x
-    
 
     def get_embedding(self, x):
-        x = self.resnet_base(x)         
-        x = torch.flatten(x, 1)          
+        """Returns the final (pre-classifier) feature vector."""
+        x = self.resnet_base(x)
+        x = torch.flatten(x, 1)
         return x
+
+    def forward_with_features(self, x, capture_layers=None):
+        """Runs the forward pass with forward hooks on the named ResNet stages
+        (layer1..layer4) to capture their intermediate activations. Hooks are
+        always removed afterward so repeated calls don't leak/accumulate."""
+        if capture_layers is None:
+            capture_layers = ["layer4"]
+        activations = {}
+        hooks = []
+        named = dict(self.resnet_base.named_children())
+        for layer_name in capture_layers:
+            if layer_name not in named:
+                raise ValueError(
+                    f"Layer '{layer_name}' not in ResNet. Valid: {list(named.keys())}"
+                )
+            def make_hook(name):
+                def hook(module, inp, out):
+                    activations[name] = out
+                return hook
+            hooks.append(named[layer_name].register_forward_hook(make_hook(layer_name)))
+        out = self.resnet_base(x)
+        out = torch.flatten(out, 1)
+        logits = self._classifier(out)
+        for h in hooks:
+            h.remove()
+        return logits, activations
