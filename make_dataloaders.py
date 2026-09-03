@@ -29,13 +29,19 @@ def resize_width_pad_height(target_width=512, target_height=512):
 
     return transform
 
-def get_dataset(data_name, path='./data'):
+def get_dataset(data_name, path='./data', model_name=None):
     """Builds (trainset, testset, dataset) for the requested dataset name,
     with per-dataset normalization/augmentation. 'dataset' is an untransformed
     (or minimally transformed) reference copy used for class-count/label
     lookups elsewhere. Clinical/generic-ImageFolder datasets get an 80/20
     train/test split via shuffled indices (the else branch also covers any
-    ImageFolder-compatible directory not explicitly named above)."""
+    ImageFolder-compatible directory not explicitly named above).
+
+    model_name is only consulted for cifar100/tinyimagenet: when it's 'vit',
+    images are resized to 224x224 and normalized with ImageNet stats instead
+    of each dataset's own native-resolution/stats pipeline, since the ViT
+    backbone (models.ViT) is a pretrained-on-ImageNet, fixed-224x224-input
+    architecture - this resize has to happen here, not inside the model."""
     if data_name == 'mnist':
         transform = transforms.Compose([
             transforms.ToTensor(),
@@ -65,28 +71,87 @@ def get_dataset(data_name, path='./data'):
         return trainset, testset, dataset
 
     elif data_name == 'cifar100':
-        # CIFAR-100 has 100 classes over the same 32x32 image size as CIFAR-10,
-        # so it needs its own normalization stats and slightly heavier
-        # augmentation (rotation + color jitter) to compensate for the smaller
-        # per-class sample count (500 images/class vs. CIFAR-10's 5000).
-        train_transform = transforms.Compose([
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomRotation(15),
-            transforms.ColorJitter(0.2, 0.2, 0.2),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5071, 0.4867, 0.4408),
-                                 (0.2675, 0.2565, 0.2761))
-        ])
-        test_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.5071, 0.4867, 0.4408),
-                                 (0.2675, 0.2565, 0.2761))
-        ])
+        if model_name == 'vit':
+            # ViT needs 224x224 inputs and was pretrained on ImageNet, so it
+            # gets ImageNet normalization stats here instead of CIFAR-100's own.
+            train_transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+            test_transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+        else:
+            # CIFAR-100 has 100 classes over the same 32x32 image size as CIFAR-10,
+            # so it needs its own normalization stats and slightly heavier
+            # augmentation (rotation + color jitter) to compensate for the smaller
+            # per-class sample count (500 images/class vs. CIFAR-10's 5000).
+            train_transform = transforms.Compose([
+                transforms.RandomCrop(32, padding=4),
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomRotation(15),
+                transforms.ColorJitter(0.2, 0.2, 0.2),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5071, 0.4867, 0.4408),
+                                     (0.2675, 0.2565, 0.2761))
+            ])
+            test_transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.5071, 0.4867, 0.4408),
+                                     (0.2675, 0.2565, 0.2761))
+            ])
         trainset = datasets.CIFAR100(root=path, train=True,  download=True, transform=train_transform)
         testset  = datasets.CIFAR100(root=path, train=False, download=True, transform=test_transform)
         dataset  = datasets.CIFAR100(root=path, train=False, download=True,
                                      transform=transforms.Compose([transforms.ToTensor()]))
+        return trainset, testset, dataset
+
+    elif data_name == 'tinyimagenet':
+        # TinyImageNet (64x64, 200 classes) isn't a built-in torchvision.datasets
+        # class - it's loaded via ImageFolder over the directory layout that
+        # scripts/prepare_tinyimagenet.py produces (train/ already ships in
+        # per-class subdirectories; val/ needs one-time reorganization from its
+        # flat layout + val_annotations.txt, which that script handles).
+        root = os.path.join(path, 'tiny-imagenet-200')
+        train_dir = os.path.join(root, 'train')
+        val_dir = os.path.join(root, 'val')
+        if not (os.path.isdir(train_dir) and os.path.isdir(val_dir)):
+            raise FileNotFoundError(
+                f"TinyImageNet not found at {root}. Run "
+                f"`python scripts/prepare_tinyimagenet.py --dataset_dir {path}` first."
+            )
+
+        if model_name == 'vit':
+            train_transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+            test_transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+        else:
+            train_transform = transforms.Compose([
+                transforms.RandomCrop(64, padding=8),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize((0.4802, 0.4481, 0.3975), (0.2770, 0.2691, 0.2821))
+            ])
+            test_transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.4802, 0.4481, 0.3975), (0.2770, 0.2691, 0.2821))
+            ])
+
+        trainset = datasets.ImageFolder(train_dir, transform=train_transform)
+        testset = datasets.ImageFolder(val_dir, transform=test_transform)
+        dataset = datasets.ImageFolder(val_dir, transform=transforms.Compose([transforms.ToTensor()]))
         return trainset, testset, dataset
 
     elif data_name == 'svhn':

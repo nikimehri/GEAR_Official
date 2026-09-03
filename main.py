@@ -62,7 +62,7 @@ def main(args):
 
 
 
-    trainset_full, testset, dataset = get_dataset(args.data_name, args.dataset_dir)
+    trainset_full, testset, dataset = get_dataset(args.data_name, args.dataset_dir, model_name=args.model_name)
 
     # Hold out a validation split from the training set (seeded for
     # reproducibility) so model selection can happen against data the model

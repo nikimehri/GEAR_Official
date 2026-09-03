@@ -118,6 +118,8 @@ def set_num_classes(args, dataset):
         num_classes = 9
     elif args.data_name == 'cifar100':
         num_classes = 100
+    elif args.data_name == 'tinyimagenet':
+        num_classes = 200
     else:
         num_classes = 10
 

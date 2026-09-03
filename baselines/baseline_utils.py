@@ -60,6 +60,8 @@ def set_num_classes(data_name, dataset):
         num_classes = 9
     elif data_name == 'cifar100':
         num_classes = 100
+    elif data_name == 'tinyimagenet':
+        num_classes = 200
     else:
         num_classes = 10
 
@@ -460,10 +462,14 @@ def resize_width_pad_height(target_width=512, target_height=512):
 
 
 
-def get_dataset(data_name, path='./data'):
+def get_dataset(data_name, path='./data', model_name=None):
     """Baselines-subsystem counterpart of make_dataloaders.get_dataset - a
     more limited dataset zoo (no mnist/svhn/oculoplastic-specific branch;
-    the else branch covers any other ImageFolder-compatible directory)."""
+    the else branch covers any other ImageFolder-compatible directory).
+
+    model_name is only consulted for cifar100/tinyimagenet: 'vit' resizes to
+    224x224 with ImageNet stats instead of each dataset's native pipeline -
+    see make_dataloaders.get_dataset's docstring for why."""
 
     if data_name == 'cifar10':
         train_transform = transforms.Compose([
@@ -484,19 +490,71 @@ def get_dataset(data_name, path='./data'):
         return trainset, testset, dataset
 
     elif data_name == 'cifar100':
-        train_transform = transforms.Compose([
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761))
-        ])
-        test_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761))
-        ])
+        if model_name == 'vit':
+            train_transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+            test_transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+        else:
+            train_transform = transforms.Compose([
+                transforms.RandomCrop(32, padding=4),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761))
+            ])
+            test_transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761))
+            ])
         trainset = datasets.CIFAR100(root=path, train=True, download=True, transform=train_transform)
         testset = datasets.CIFAR100(root=path, train=False, download=True, transform=test_transform)
         dataset = datasets.CIFAR100(root=path, train=False, download=True, transform=transforms.Compose([transforms.ToTensor()]))
+        return trainset, testset, dataset
+
+    elif data_name == 'tinyimagenet':
+        root = os.path.join(path, 'tiny-imagenet-200')
+        train_dir = os.path.join(root, 'train')
+        val_dir = os.path.join(root, 'val')
+        if not (os.path.isdir(train_dir) and os.path.isdir(val_dir)):
+            raise FileNotFoundError(
+                f"TinyImageNet not found at {root}. Run "
+                f"`python scripts/prepare_tinyimagenet.py --dataset_dir {path}` first."
+            )
+
+        if model_name == 'vit':
+            train_transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+            test_transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+        else:
+            train_transform = transforms.Compose([
+                transforms.RandomCrop(64, padding=8),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize((0.4802, 0.4481, 0.3975), (0.2770, 0.2691, 0.2821))
+            ])
+            test_transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.4802, 0.4481, 0.3975), (0.2770, 0.2691, 0.2821))
+            ])
+
+        trainset = datasets.ImageFolder(train_dir, transform=train_transform)
+        testset = datasets.ImageFolder(val_dir, transform=test_transform)
+        dataset = datasets.ImageFolder(val_dir, transform=transforms.Compose([transforms.ToTensor()]))
         return trainset, testset, dataset
 
     elif data_name == 'fashionmnist':

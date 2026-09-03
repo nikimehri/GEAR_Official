@@ -169,7 +169,7 @@ if __name__ == '__main__':
         oculoplastics  = single_exp['oculoplastics']
         data_path      = single_exp['data_path']
 
-        trainset, testset, dataset = get_dataset(data_name, data_path)
+        trainset, testset, dataset = get_dataset(data_name, data_path, model_name=model_type)
         train_loader, test_loader = get_dataloader(trainset, testset, batch_size, device=device)
         num_classes, idx_to_class = set_num_classes(data_name, dataset)
         total_forget_class = sum(1 for _, target in dataset if target == forget_class)
@@ -337,7 +337,7 @@ if __name__ == '__main__':
 
                 print(f'EXPERIMENTAL REPORT: \ncustom unlearn :  {custom_unlearn}, \n data name : {data_name} \n oculoplastics : {oculoplastics} \n forget class : {forget_class} \n unlearn type : {unlearn_type} ')
 
-                trainset, testset, dataset = get_dataset(data_name, data_path)
+                trainset, testset, dataset = get_dataset(data_name, data_path, model_name=model_type)
                 train_loader, test_loader = get_dataloader(trainset, testset, batch_size, device=device)
 
                 # set number of classes
