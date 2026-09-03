@@ -17,29 +17,24 @@ def seed_torch(seed=2022):
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
 
-def set_up_save(args, distributions, gamma_values, l1_norms, name):
+def set_up_save(args, name):
+    """Creates {name}.csv and writes its header. Columns cover the two
+    stages a run can report: the SOTA/baseline unlearning run (--run_sota)
+    and the GEAR-specific run (--specific_settings). Note this truncates
+    any existing file with the same name."""
 
     output_file_name = name + '.csv'
-    
-    csv_columns = ['Dataset', 'Model', 'Gamma', 'Distribution', 'Forget Acc SOTA', 'Remain Acc SOTA', 'Original Acc', 'Retrain Acc', 'Unlearning Time', 'Per Class Accuracies SOTA']
-    # csv_columns = ['Dataset',  'Original Acc', 'Retrain Acc', 'Unlearning Time']
 
-    for dist in distributions:
-        for gamma in gamma_values:
-            csv_columns.append(f'Forget Acc {dist} {gamma}')
-            csv_columns.append(f'Remain Acc {dist} {gamma}')
-            csv_columns.append(f'Per Class Accuracies {dist} {gamma}')
-        if len(l1_norms)>1:
-            for setting in l1_norms:
-                for gamma in gamma_values:
-                    csv_columns.append(f'Forget Acc {dist}_lambda_{gamma}_{setting}')
-                    csv_columns.append(f'Remain Acc {dist}_lambda_{gamma}_{setting}')
-                    csv_columns.append(f'Per Class Accuracies {dist}_lambda_{gamma}_{setting}')
+    csv_columns = [
+        'Dataset', 'Model', 'Original Acc', 'Retrain Acc',
+        'Forget Acc SOTA', 'Remain Acc SOTA', 'Per Class Accuracies SOTA', 'Unlearning Time',
+        'Forget Acc', 'Retain Remote Acc', 'Retain Adjacent Acc', 'Test Acc', 'MIA',
+    ]
 
     with open(output_file_name, 'w', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=csv_columns)
         writer.writeheader()
-    
+
     return csv_columns, output_file_name
 
 

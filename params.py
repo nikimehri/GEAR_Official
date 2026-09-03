@@ -3,7 +3,7 @@ import os
 
 
 def get_parameters():
-    parser = argparse.ArgumentParser("Boundary Unlearning")
+    parser = argparse.ArgumentParser("GEAR Unlearning (contrastive loss + entanglement-score weighting)")
 
     # which dataset to use
     parser.add_argument('--data_name', type=str, default='cifar10', choices=['cifar10', 'cifar100', 'resnet', 'vit', 'open_source', 'fundus_3_class', 'oct_4_class', 'oculoplastic',\
@@ -51,14 +51,7 @@ def get_parameters():
     parser.add_argument('--original_model', type=str, help='path to original model')
     parser.add_argument('--retrain_model', type=str, help='path to retrain model')
 
-
-    # algorithm args
-    parser.add_argument('--use_linfpgd', action='store_true', help='use linfpgd- only for unlearning ViT')
-    parser.add_argument('--scaling', type=str, default='None', choices=['None', 'inverse', 'exponential_decay', 'linear_decay'], help='lambda scaling method')
-
     parser.add_argument('--gpu_id', type=int,default = 0, help='which GPU to use')
-    parser.add_argument('--gamma', type=float, default = 0)
-    parser.add_argument('--lamda', type=float, default = 0)
     parser.add_argument('--name', type=str, default = 'placeholder')
 
     #params for embedding experiments
@@ -66,11 +59,7 @@ def get_parameters():
     parser.add_argument('--unlearn_model', type=str, help='path to unlearn model')
     parser.add_argument('--embeddings_name', type=str, help='path to unlearn model')
 
-
-    parser.add_argument('--use_logits', action='store_true', help='toggle whether or not to logits or argmax of adv sample')
     parser.add_argument('--remain_reg', type=float, default=0, help='contribution of remain loss to add to total loss')
-    parser.add_argument('--logit_preprocess', action='store_true', help='toggle whether or not to preprocess logits')
-
 
     parser.add_argument('--good_forget', type=str, help='path to unlearn model with good forget acc')
     parser.add_argument('--good_remain', type=str, help='path to unlearn model with good remain acc')

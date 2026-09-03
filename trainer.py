@@ -274,7 +274,7 @@ def eval(model, data_loader, batch_size=64, mode='backdoor', print_perform=False
 
 
 def train_engine(args, train_remain_loader, val_remain_loader, train_loader, val_loader, \
-                 dataset, num_classes, idx_to_class, device, model_name, output_file_name, csv_columns, distributions, gamma_values,exp_name='deafault'):
+                 dataset, num_classes, idx_to_class, device, model_name, output_file_name, csv_columns, exp_name='deafault'):
 
     if args.train:
         print('=' * 100)
@@ -328,14 +328,14 @@ def train_engine(args, train_remain_loader, val_remain_loader, train_loader, val
 
         retrain_model.to('cpu')
 
-        # Log average accuracy of original and retrain models
+        # Log average accuracy of original and retrain models. Forget/remain/
+        # test-specific columns are left for the caller to fill in once it
+        # runs --run_sota and/or --specific_settings unlearning.
         with open(output_file_name, 'a', newline='') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=csv_columns)
             row_data = {
                 'Dataset': args.data_name,
                 'Model': args.model_name,
-                'Gamma': 'N/A',
-                'Distribution': 'N/A',
                 'Forget Acc SOTA': 'N/A',
                 'Remain Acc SOTA': 'N/A',
                 'Original Acc': orig_acc.detach().item(),
@@ -343,16 +343,6 @@ def train_engine(args, train_remain_loader, val_remain_loader, train_loader, val
                 'Unlearning Time': 'N/A',
                 'Per Class Accuracies SOTA': 'N/A'
             }
-
-            # Add entries for each combination of distribution and gamma value
-            for dist in distributions:
-                for gamma in gamma_values:
-                    forget_acc_col = f'Forget Acc {dist} {gamma}'
-                    remain_acc_col = f'Remain Acc {dist} {gamma}'
-                    per_class_acc_col = f'Per Class Accuracies {dist} {gamma}'
-                    row_data[forget_acc_col] = 'N/A'
-                    row_data[remain_acc_col] = 'N/A'
-                    row_data[per_class_acc_col] = 'N/A'
 
             writer.writerow(row_data)
 

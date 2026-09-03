@@ -1,7 +1,7 @@
 
 import argparse
 import numpy as np
-import boundary_unlearning
+import gear
 from utils import *
 from trainer import *
 import shutil
@@ -22,17 +22,13 @@ from ensemble import run_exps
 def main(args):
     torch.cuda.empty_cache()
     seed_torch()
-        # TODO improve logging   
-    # gamma_values = [.1, 0.5, 0.9]
-    gamma_values = [0, .0001, .1, 1]
 
-    l1_norms = [False]
-    # distributions = ['normal', 'cauchy', 'laplacian', 'uniform']
-    distributions = ['normal']
+    csv_columns, output_file_name = set_up_save(args, args.name)
+    # Shared across every sweep invocation of this script (e.g. multiple
+    # hyperparameter runs with the same --name) so each run appends one row.
+    results_csv = f"{args.name}_sweep_results.csv"
 
-    csv_columns, output_file_name = set_up_save(args, distributions, gamma_values, l1_norms, args.name)
-
-    # set device 
+    # set device
     device = torch.device(f'cuda:{args.gpu_id}' if torch.cuda.is_available() else 'cpu')
 
     create_dir(args.dataset_dir)
@@ -124,8 +120,6 @@ def main(args):
         
         plt.tight_layout()
         plt.savefig(args.embeddings_name + '.png', dpi=600)
-        
-        breakpoint
 
 
     '''
@@ -137,22 +131,38 @@ def main(args):
 
     ori_model, retrain_model, row_data = train_engine(args, train_remain_loader, val_remain_loader, train_loader, val_loader,
                  dataset, num_classes, idx_to_class, device, model_name, output_file_name,
-                 csv_columns, distributions, gamma_values,exp_name = args.name)
+                 csv_columns, exp_name = args.name)
 
     if args.do_unlearning:
-        '''
-        set gamma and lambda = 0
-        '''
+        # Shared GEAR keyword arguments for both modes below - the only
+        # differences between --run_sota and --specific_settings are which
+        # split gets evaluated (test vs. validation) and the output name.
+        gear_kwargs = dict(
+            forget_class=args.forget_class, path=path, custom_forget=args.custom_unlearn, to_forget=args.to_forget,
+            data_name=args.data_name, oculoplastics=args.oculoplastics,
+            retrain_model=retrain_model, train_remain_loader=train_remain_loader,
+            remain_reg_param=args.remain_reg, selective_unlearning=SELECTIVE_UNLEARNING,
+            poison_epoch=args.poison_epoch,
+            feature_contrastive=args.feature_contrastive,
+            feature_align_weight=args.feature_align_weight,
+            retain_forget_weight=args.retain_forget_weight,
+            forget_forget_weight=args.forget_forget_weight,
+            gamma_rep=args.gamma_rep,
+            target_layer=args.target_layer,
+            results_csv=results_csv,
+            use_entanglement_weighting=args.use_entanglement_weighting,
+            centroid_refresh_interval=args.centroid_refresh_interval,
+            num_classes=num_classes,
+            cl_warmup_steps=args.cl_warmup_steps,
+        )
+
         if args.run_sota:
-            print('DOING BOUNDARY SHRINKAGE WITH SOTA METHOD')
+            print('RUNNING GEAR UNLEARNING (evaluated against the test set)')
             save_me = args.name + '_SOTA'
-            unlearn_model_sota, forget_acc_sota, remain_acc_sota, unlearning_time = boundary_unlearning.boundary_shrink(
-                    ori_model, train_forget_loader, trainset, testset, test_loader, device, 
-                    forget_class=args.forget_class, path=path, custom_forget=args.custom_unlearn, to_forget=args.to_forget,
-                    test_metadata=test_dict, train_metadata=train_dict,gamma=0, dist='normal',
-                    output_name=save_me, use_linfpgd=args.use_linfpgd, lamda=0, l1_norm=False, data_name = args.data_name, scaling = None, 
-                    oculoplastics=args.oculoplastics, retrain_model=retrain_model, train_remain_loader=train_remain_loader, use_logits = args.use_logits,
-                    remain_reg_param= args.remain_reg, logit_preprocess= args.logit_preprocess, selective_unlearning=SELECTIVE_UNLEARNING
+            unlearn_model_sota, forget_acc_sota, remain_acc_sota, unlearning_time, _, _ = gear.gear(
+                ori_model, train_forget_loader, trainset, testset, test_loader, device,
+                test_metadata=test_dict, train_metadata=train_dict, output_name=save_me,
+                **gear_kwargs
             )
 
             # Calculate per class accuracy
@@ -170,34 +180,32 @@ def main(args):
                 writer.writerow(row_data)
 
 
-    
         '''
-        Use argument specific_settings to unlearn using specific settings
+        Use argument specific_settings to unlearn evaluated against the
+        held-out validation set (rather than test), matching the model
+        selection convention used elsewhere in the pipeline.
         '''
         if args.specific_settings:
-            lamda = args.lamda
-            gamma = args.gamma
-            dist = 'normal'
             save_me = args.name
 
-            unlearn_model, forget_acc, remain_acc, boundary_shrink_time = boundary_unlearning.boundary_shrink(
-                ori_model, train_forget_loader, trainset, testset, test_loader, device,
-                forget_class=args.forget_class, path=path, custom_forget=args.custom_unlearn, to_forget=args.to_forget,
-                test_metadata=test_dict, train_metadata=train_dict, gamma=args.gamma,
-                dist=dist, output_name=save_me, use_linfpgd=False, lamda=args.lamda, l1_norm=False, data_name = args.data_name,scaling = None, 
-                oculoplastics=args.oculoplastics, retrain_model=retrain_model, train_remain_loader=train_remain_loader, use_logits = args.use_logits,
-                        remain_reg_param= args.remain_reg, logit_preprocess= args.logit_preprocess, selective_unlearning=SELECTIVE_UNLEARNING
+            unlearn_model, forget_acc, remain_acc, gear_time, test_acc, mia_score = gear.gear(
+                ori_model, train_forget_loader, trainset, valset, val_loader, device,
+                test_metadata=val_dict, train_metadata=train_dict, output_name=save_me,
+                **gear_kwargs
             )
             unlearn_model.to(device)
 
-            print(f'MODIFIED UNLEARNING TIME for gamma {args.gamma} lambda {args.lamda} forgetting {num_forget} SAMPLES: {boundary_shrink_time} ')
+            print(f'GEAR UNLEARNING TIME forgetting {num_forget} SAMPLES: {gear_time}')
 
-            per_class_accs = test(unlearn_model, test_loader, idx_to_class, num_classes, device)
-
-            # Update row data
-            row_data[f'Forget Acc {dist}_lambda_{gamma}'] = forget_acc.detach().item()
-            row_data[f'Remain Acc {dist}_lambda_{gamma}'] = remain_acc.detach().item()
-            row_data[f'Per Class Accuracies {dist}_lambda_{gamma}'] = json.dumps(per_class_accs)
+            # Fixed columns for the GEAR-specific run. Retain Remote/Adjacent
+            # Acc are placeholders - not yet computed anywhere in the
+            # pipeline, pending a metric definition to follow.
+            row_data['Forget Acc'] = forget_acc.detach().item()
+            row_data['Retain Remote Acc'] = 'N/A'
+            row_data['Retain Adjacent Acc'] = 'N/A'
+            row_data['Test Acc'] = test_acc.detach().item() if isinstance(test_acc, torch.Tensor) else test_acc
+            row_data['MIA'] = mia_score
+            row_data['Unlearning Time'] = gear_time
 
             with open(output_file_name, 'a', newline='') as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=csv_columns)
