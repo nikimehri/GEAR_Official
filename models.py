@@ -1,5 +1,6 @@
 from torch import nn
 import torch
+import timm
 from torchvision.models import resnet50, ResNet50_Weights
 
 
@@ -175,6 +176,64 @@ class CustomResNet(nn.Module):
         out = self.resnet_base(x)
         out = torch.flatten(out, 1)
         logits = self._classifier(out)
+        for h in hooks:
+            h.remove()
+        return logits, activations
+
+
+class ViT(nn.Module):
+    """A Vision Transformer backbone (pretrained on ImageNet via timm) with a
+    replaced classifier head. Input images must already be resized to
+    img_size x img_size — that's the dataset transform pipeline's job, not
+    this class's.
+
+    The defaults (timm_model_name='vit_base_patch32_224', img_size=224,
+    patch_size=32) are the checkpoint's own native configuration, so the
+    pretrained patch embedding loads with no resizing/reinitialization —
+    this is what CIFAR-100/TinyImageNet use. trainer.py's clinical pipeline
+    instead overrides these to reuse a patch16 checkpoint at img_size=512, a
+    genuine patch/resolution mismatch that timm resolves by reinitializing
+    the patch-embedding layer."""
+
+    def __init__(self, num_classes, timm_model_name='vit_base_patch32_224', img_size=224, patch_size=32):
+        super(ViT, self).__init__()
+        self.vit = timm.create_model(timm_model_name, pretrained=True, img_size=img_size, patch_size=patch_size)
+        self.vit.head = nn.Linear(self.vit.head.in_features, num_classes)
+
+    def forward(self, x):
+        return self.vit(x)
+
+    def get_embedding(self, x):
+        """Returns the final pooled representation before the classifier head."""
+        features = self.vit.forward_features(x)
+        return self.vit.forward_head(features, pre_logits=True)
+
+    def forward_with_features(self, x, capture_layers=None):
+        """Runs the forward pass with forward hooks on the named transformer
+        blocks (self.vit.blocks[i]) to capture their intermediate
+        activations, addressed by integer block index (e.g. capture_layers=[6]
+        captures the 6th block's output). Only the CLS token (index 0 of the
+        token sequence) is kept per captured block, not the full [B, N, D]
+        token sequence — this keeps captured activations a plain [B, D]
+        vector, matching what gear.py's prepare_features expects from
+        AllCNN/CustomResNet's captured activations. Hooks are always removed
+        afterward so repeated calls don't leak/accumulate."""
+        num_blocks = len(self.vit.blocks)
+        if capture_layers is None:
+            capture_layers = [num_blocks - 1]
+        activations = {}
+        hooks = []
+        for layer_idx in capture_layers:
+            if not (0 <= layer_idx < num_blocks):
+                raise ValueError(
+                    f"Block index {layer_idx} out of range. Valid: 0-{num_blocks - 1}"
+                )
+            def make_hook(idx):
+                def hook(module, inp, out):
+                    activations[idx] = out[:, 0, :]
+                return hook
+            hooks.append(self.vit.blocks[layer_idx].register_forward_hook(make_hook(layer_idx)))
+        logits = self.vit(x)
         for h in hooks:
             h.remove()
         return logits, activations

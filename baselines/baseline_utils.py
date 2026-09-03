@@ -617,6 +617,11 @@ def load_model(model_type, num_classes, data_name, n_channels=3, size=32, batch_
     elif model_type in ('resnet', 'resnet50'):
         cifar_stem = data_name in ('cifar10', 'cifar100')
         model = CustomResNet(num_classes=num_classes, cifar_stem=cifar_stem)
+    elif model_type == 'vit':
+        if data_name in ('cifar100', 'tinyimagenet'):
+            model = ViT(num_classes=num_classes)
+        else:
+            model = ViT(num_classes=num_classes, timm_model_name='vit_base_patch16_224', img_size=512, patch_size=32)
     return model
 
 

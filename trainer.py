@@ -3,9 +3,8 @@ from sklearn.metrics import accuracy_score
 import torch
 from torch import nn, optim
 from tqdm import tqdm
-from models import AllCNN, CustomResNet
+from models import AllCNN, CustomResNet, ViT
 import csv
-import timm
 from torchvision import datasets
 from sklearn.utils.class_weight import compute_class_weight
 import numpy as np
@@ -145,9 +144,13 @@ def train_save_model(train_loader, val_loader, model_name, optim_name, learning_
         model.to(device)
 
     elif model_name == 'vit':
-        model = timm.create_model('vit_base_patch16_224', pretrained=True,
-                                   img_size=512, patch_size=32)
-        model.head = nn.Linear(model.head.in_features, num_classes)
+        if data_name in ('cifar100', 'tinyimagenet'):
+            model = ViT(num_classes=num_classes)  # native config: vit_base_patch32_224 @ 224x224
+        else:
+            # Clinical imaging pipeline: reuses a patch16 checkpoint at 512x512,
+            # a deliberate override from the checkpoint's native config.
+            model = ViT(num_classes=num_classes, timm_model_name='vit_base_patch16_224', img_size=512, patch_size=32)
+        model = nn.DataParallel(model)
         model.to(device)
 
     elif model_name == 'AllCNN':
@@ -166,7 +169,7 @@ def train_save_model(train_loader, val_loader, model_name, optim_name, learning_
 
     criterion = loss_picker('cross', train_loader=train_loader, device=device, forget_class=forget_class, num_classes=num_classes)
     optimizer = optimizer_picker(optim_name, model.parameters(), lr=learning_rate, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs) if model_name in ('resnet', 'resnet50') else None
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs) if model_name in ('resnet', 'resnet50', 'vit') else None
 
     best_acc = 0
 

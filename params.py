@@ -10,7 +10,7 @@ def get_parameters():
     parser = argparse.ArgumentParser("GEAR Unlearning (contrastive loss + entanglement-score weighting)")
 
     # which dataset to use
-    parser.add_argument('--data_name', type=str, default='cifar10', choices=['cifar10', 'cifar100', 'resnet', 'vit', 'open_source', 'fundus_3_class', 'oct_4_class', 'oculoplastic',\
+    parser.add_argument('--data_name', type=str, default='cifar10', choices=['cifar10', 'cifar100', 'open_source', 'fundus_3_class', 'oct_4_class', 'oculoplastic',\
      'dr_grade', 'mri', 'ultrasound', 'cxr', 'svhn', 'fashionmnist', 'medmnist'],
                         help='dataset, e.g. cifar10, cifar100, fashionmnist')
 
@@ -129,7 +129,7 @@ def get_parameters():
 
     VALID_PAIRINGS = {
         'cifar10':      ['AllCNN'],
-        'cifar100':     ['resnet', 'resnet50'],
+        'cifar100':     ['resnet', 'resnet50', 'vit'],
         'fashionmnist': ['AllCNN'],
     }
     if args.data_name in VALID_PAIRINGS:
