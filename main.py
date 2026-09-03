@@ -65,21 +65,38 @@ def main(args):
 
 
 
-    trainset, testset, dataset = get_dataset(args.data_name, args.dataset_dir)
+    trainset_full, testset, dataset = get_dataset(args.data_name, args.dataset_dir)
+
+    # Hold out a validation split from the training set (seeded for
+    # reproducibility) so model selection can happen against data the model
+    # never trains on, instead of leaking test-set decisions into training.
+    val_size = int(len(trainset_full) * args.val_fraction)
+    train_size = len(trainset_full) - val_size
+    split_generator = torch.Generator().manual_seed(args.seed)
+    trainset, valset = torch.utils.data.random_split(
+        trainset_full, [train_size, val_size], generator=split_generator
+    )
+
     train_loader, test_loader = get_dataloader(trainset, testset, args.batch_size, device=device)
-    
-    # set number of classes 
+    val_loader = DataLoader(valset, batch_size=args.batch_size, shuffle=True)
+
+    # set number of classes
     num_classes, idx_to_class = set_num_classes(args, dataset)
-    total_forget_class = sum(1 for _, target in trainset if target == 0)
+    total_forget_class = sum(1 for _, target in trainset if target == args.forget_class)
 
     num_forget = int(total_forget_class * FORGET_PERCENTAGE)
     print(f"Number to forget: {num_forget}")
 
 
-    train_forget_loader, train_remain_loader, test_forget_loader, test_remain_loader, _, \
-        _, _, _, _, train_dict, test_dict = dataloader_engine(args, trainset, testset, combined_df, num_forget=num_forget,
-                                                              oculoplastics=args.oculoplastics, 
-                                                              selective_unlearning = SELECTIVE_UNLEARNING)
+    train_forget_loader, train_remain_loader, \
+        val_forget_loader, val_remain_loader, \
+        test_forget_loader, test_remain_loader, \
+        _, _, _, _, _, _, \
+        train_dict, val_dict, test_dict = dataloader_engine(
+            args, trainset, valset, testset, combined_df, num_forget=num_forget,
+            oculoplastics=args.oculoplastics,
+            selective_unlearning=SELECTIVE_UNLEARNING
+        )
     
  
 
@@ -118,8 +135,8 @@ def main(args):
         run_exps(args, testset, trainset, train_remain_loader, finetune=True, frozen=False)
 
 
-    ori_model, retrain_model, row_data = train_engine(args, train_remain_loader, test_remain_loader, train_loader, test_loader, 
-                 dataset, num_classes, idx_to_class, device, model_name, output_file_name, 
+    ori_model, retrain_model, row_data = train_engine(args, train_remain_loader, val_remain_loader, train_loader, val_loader,
+                 dataset, num_classes, idx_to_class, device, model_name, output_file_name,
                  csv_columns, distributions, gamma_values,exp_name = args.name)
 
     if args.do_unlearning:
