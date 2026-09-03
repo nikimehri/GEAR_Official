@@ -126,7 +126,7 @@ def main(args):
     Not included in TMLR paper but keeping for future work
     '''
     if args.ensemble:
-        run_exps(args, testset, trainset, train_remain_loader, finetune=True, frozen=False)
+        run_exps(args, valset, testset, train_remain_loader, finetune=True, frozen=False)
 
 
     ori_model, retrain_model, row_data = train_engine(args, train_remain_loader, val_remain_loader, train_loader, val_loader,

@@ -1,28 +1,88 @@
-import numpy as np
-import torch
-
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.manifold import TSNE
-from tqdm import tqdm
-
-from matplotlib.colors import ListedColormap
-
-from sklearn.manifold import TSNE
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
-from sklearn.neighbors import KNeighborsClassifier
-
-from sklearn.manifold import TSNE
-from sklearn.neighbors import KNeighborsClassifier
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
 import os
 import shutil
+
+import numpy as np
+import torch
+import torch.nn.functional as F_nn
+import matplotlib.pyplot as plt
+import seaborn as sns
+from matplotlib.colors import ListedColormap
+from sklearn.manifold import TSNE
+from sklearn.neighbors import KNeighborsClassifier
+from tqdm import tqdm
 from torchvision.utils import save_image
 import torchvision.transforms.functional as F
+
+
+def compute_embedding_complexity(model, forget_loader, retain_loader, device='cuda', layer_name=None, chunk_size=512):
+    """Diagnostic for how "hard" the forget set is to separate from retain
+    data: inter_class_proximity (how close forget samples are to their
+    nearest retain neighbor) minus intra_class_cohesion (how tightly forget
+    samples cluster around their own centroid). Higher complexity means the
+    forget class overlaps more with retain classes in feature space."""
+    model.eval()
+
+    forget_embeddings = []
+    retain_embeddings = []
+
+    def _extract(x):
+        if layer_name is None:
+            if hasattr(model, 'module'):
+                return model.module.get_embedding(x)
+            return model.get_embedding(x)
+        # Convert "9" → int for AllCNN; keep string for ResNet
+        layer = int(layer_name) if layer_name.isdigit() else layer_name
+        if hasattr(model, 'module'):
+            _, feat_dict = model.module.forward_with_features(x, capture_layers=[layer])
+        else:
+            _, feat_dict = model.forward_with_features(x, capture_layers=[layer])
+        feat = feat_dict[layer]
+        if feat.dim() > 2:
+            feat = feat.mean(dim=(2, 3))  # Global average pooling for conv layers
+        return feat
+
+    with torch.no_grad():
+        for x, _ in forget_loader:
+            forget_embeddings.append(_extract(x.to(device)))
+        for x, _ in retain_loader:
+            retain_embeddings.append(_extract(x.to(device)))
+
+    forget_embeddings = torch.cat(forget_embeddings, dim=0)  # [N_f, d]
+    retain_embeddings = torch.cat(retain_embeddings, dim=0)  # [N_r, d]
+
+    forget_normed = F_nn.normalize(forget_embeddings, dim=1, eps=1e-8)  # [N_f, d]
+    retain_normed = F_nn.normalize(retain_embeddings, dim=1, eps=1e-8)  # [N_r, d]
+
+    # Forget centroid (normalised for cosine similarity)
+    mu_f = F_nn.normalize(forget_embeddings.mean(dim=0, keepdim=True), dim=1, eps=1e-8)  # [1, d]
+
+    # Inter-class proximity: E[max_{x_r} cos_sim(x_f, x_r)]
+    # Chunked over retain to avoid OOM on large retain sets
+    max_sims = torch.full((len(forget_normed),), -float('inf'), device=device)
+    for start in range(0, len(retain_normed), chunk_size):
+        chunk = retain_normed[start:start + chunk_size]       # [chunk, d]
+        sims = torch.mm(forget_normed, chunk.t())              # [N_f, chunk]
+        chunk_max, _ = sims.max(dim=1)                         # [N_f]
+        max_sims = torch.maximum(max_sims, chunk_max)
+
+    inter_class_proximity = max_sims.mean().item()
+
+    # Intra-class cohesion: E[cos_sim(x_f, mu_f)]
+    intra_sims = torch.mm(forget_normed, mu_f.t()).squeeze(1)  # [N_f]
+    intra_class_cohesion = intra_sims.mean().item()
+
+    complexity = inter_class_proximity - intra_class_cohesion
+
+    return {
+        'complexity': complexity,
+        'inter_class_proximity': inter_class_proximity,
+        'intra_class_cohesion': intra_class_cohesion,
+        'forget_centroid_norm_raw': forget_embeddings.mean(dim=0).norm().item(),
+        'n_forget': len(forget_embeddings),
+        'n_retain': len(retain_embeddings),
+        'max_sims_per_sample': max_sims.cpu().numpy(),
+    }
+
 
 def get_embeddings_predictions_and_forget_indications(model, forget_loader, remain_loader, device):
     model.eval()
