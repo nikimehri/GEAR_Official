@@ -19,7 +19,7 @@ checkpoints/
 *_es_trajectory.npy
 *_es_meta.json
 *_tsne*.png
-MIA_ATTACK_LOOK_HERE*.jpg
+mia_loss_histogram_*.jpg
 
 # Local scratch/working notes for this migration (not part of the published repo)
 migration_notes/

@@ -53,7 +53,7 @@ def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, s
 
     per_class_accs = test(model, test_loader, idx_to_class, num_classes, device)
 
-    MIA = membership_inference_attack(model, test_loader, final_forget_loader, device, seed=seed)
+    MIA = membership_inference_attack(model, test_loader, final_forget_loader, device, seed=seed, name=name)
 
     print(f"{name} -> Full test Acc: {test_acc:.5f} Forget Acc: {forget_acc:.5f} Remain Acc: {remain_acc:.5f} MIA: {np.mean(MIA):.2f}±{np.std(MIA):0.2f}")
 

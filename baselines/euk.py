@@ -1,43 +1,17 @@
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import cross_val_score
-from sklearn.model_selection import StratifiedShuffleSplit
-from sklearn.metrics import confusion_matrix
-import random
-import numpy as np
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
-import seaborn as sns
 
-# from mia_metric import *
 from baseline_utils import *
-
 from thirdparty.repdistiller.helper.util import adjust_learning_rate as sgda_adjust_learning_rate
-from thirdparty.repdistiller.distiller_zoo import DistillKL, HintLoss, Attention, Similarity, Correlation, VIDLoss, RKDLoss
-from thirdparty.repdistiller.distiller_zoo import PKT, ABLoss, FactorTransfer, KDSVD, FSP, NSTLoss
-
-from thirdparty.repdistiller.helper.loops import train_distill, train_distill_hide, train_distill_linear, train_vanilla, train_negrad, train_bcu, train_bcu_distill, validate
-from thirdparty.repdistiller.helper.pretrain import init
+from thirdparty.repdistiller.helper.loops import train_vanilla
 
 import copy
-
-
-def replace_loader_dataset(data_loader, dataset, batch_size=128, seed=1, shuffle=True):
-    seed_torch(seed)
-    loader_args = {'num_workers': 0, 'pin_memory': False}
-    def _init_fn(worker_id):
-        np.random.seed(int(seed))
-    return torch.utils.data.DataLoader(dataset, batch_size=batch_size,num_workers=0,pin_memory=True,shuffle=shuffle)
 
 
 def cfk_unlearn(model_cfk, r_loader, model_name):
     lr_decay_epochs = [10,15,20]
     cfk_lr = 0.01
     cfk_epochs = 10
-
-    # cfk_bs = 64
-    # r_loader = replace_loader_dataset(train_loader_full,retain_dataset, seed=seed, batch_size=cfk_bs, shuffle=True)
-    # model_cfk = copy.deepcopy(model)
 
     for param in model_cfk.parameters():
         param.requires_grad_(False)
@@ -67,9 +41,7 @@ def euk_unlearn(model, r_loader, model_name):
     lr_decay_epochs = [10,15,20]
     euk_lr = 0.01
     euk_epochs = 10
-    euk_bs = 64
     model_initial = model
-    # r_loader = replace_loader_dataset(train_loader_full, retain_dataset, seed=seed, batch_size=euk_bs, shuffle=True)
     model_euk = copy.deepcopy(model)
 
     for param in model_euk.parameters():

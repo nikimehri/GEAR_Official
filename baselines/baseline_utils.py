@@ -175,13 +175,6 @@ def get_custom_forget_loader_oculoplastics(dataset, metadata_dict, batch_size=8)
 
 
 
-def dataloader_engine(batch_size, trainset, testset, forget_class = 0, selective_unlearning = False, num_forget=5000):
-    print('getting unlearn loader')
-    num_forget = num_forget
-    return get_unlearn_loader(trainset, testset, forget_class, batch_size, num_forget, selective_unlearning=selective_unlearning)
-
-
-
 def get_custom_forget_loader(dataset, metadata_dict, attribute_to_forget, batch_size=8):
     forget_indices = []
     remain_indices = []
@@ -675,7 +668,7 @@ def evaluate_attack_model(sample_loss,
 
 
 
-def membership_inference_attack(model, test_loader, forget_loader, device, seed=2022):
+def membership_inference_attack(model, test_loader, forget_loader, device, seed=2022, name='mia'):
     """
     Simple MIA function that:
       - Computes losses on the entire test set (test_loader).
@@ -724,7 +717,7 @@ def membership_inference_attack(model, test_loader, forget_loader, device, seed=
     plt.legend(prop={"size": 14})
     plt.title("Loss Histograms", size=18)
     plt.xlabel("Loss Values", size=14)
-    plt.savefig("MIA_ATTACK_LOOK_HERE.jpg", dpi=300)
+    plt.savefig(f"mia_loss_histogram_{name}_seed{seed}.jpg", dpi=300)
     plt.close()
 
     # 5) Evaluate MIA using logistic regression

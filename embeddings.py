@@ -1,17 +1,11 @@
-import os
-import shutil
-
 import numpy as np
 import torch
 import torch.nn.functional as F_nn
 import matplotlib.pyplot as plt
-import seaborn as sns
 from matplotlib.colors import ListedColormap
 from sklearn.manifold import TSNE
 from sklearn.neighbors import KNeighborsClassifier
 from tqdm import tqdm
-from torchvision.utils import save_image
-import torchvision.transforms.functional as F
 
 
 def compute_embedding_complexity(model, forget_loader, retain_loader, device='cuda', layer_name=None, chunk_size=512):
@@ -192,45 +186,6 @@ def plot_tsne(embeddings, predictions, is_forget_sample, true_labels, title, ax,
         ax.legend(handles + [star, mis_edge],
                   labels + ['Forget Set'],
                   loc='best', fontsize=11, frameon=True)
-
-
-def unnormalize(tensor):
-    mean = torch.tensor([0.485, 0.456, 0.406]).view(3,1,1)
-    std  = torch.tensor([0.229, 0.224, 0.225]).view(3,1,1)
-    return tensor * std + mean
-
-
-
-def save_unlearning_examples(model, forget_loader, remain_loader, device, save_dir):
-    print('getting exampels imgaes')
-    model.eval()
-    os.makedirs(f"{save_dir}/forget_misclassified", exist_ok=True)
-    os.makedirs(f"{save_dir}/remain_correct", exist_ok=True)
-
-    with torch.no_grad():
-        for i, (data, target) in enumerate(forget_loader):
-            data = data.to(device)
-            output = model(data)
-            preds = output.argmax(dim=1).cpu()
-            target = target.cpu()
-
-            for j in range(len(data)):
-                if preds[j] != target[j]:
-                    path = f"{save_dir}/forget_misclassified/img_{i}_{j}_pred{preds[j].item()}_true{target[j].item()}.png"
-                    img = unnormalize(data[j].cpu()).clamp(0, 1)
-                    save_image(img, path)
-
-        for i, (data, target) in enumerate(remain_loader):
-            data = data.to(device)
-            output = model(data)
-            preds = output.argmax(dim=1).cpu()
-            target = target.cpu()
-
-            for j in range(len(data)):
-                if preds[j] == target[j]:
-                    path = f"{save_dir}/remain_correct/img_{i}_{j}_pred{preds[j].item()}_true{target[j].item()}.png"
-                    img = unnormalize(data[j].cpu()).clamp(0, 1)
-                    save_image(img, path)
 
 
 

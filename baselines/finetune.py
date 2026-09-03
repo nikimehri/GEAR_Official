@@ -2,26 +2,13 @@ import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import cross_val_score
-from sklearn.model_selection import StratifiedShuffleSplit
-from sklearn.metrics import confusion_matrix
 import random
 import numpy as np
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
-import seaborn as sns
 
 from baseline_utils import *
-from thirdparty.repdistiller.helper.util import adjust_learning_rate as sgda_adjust_learning_rate
-from thirdparty.repdistiller.distiller_zoo import DistillKL, HintLoss, Attention, Similarity, Correlation, VIDLoss, RKDLoss
-from thirdparty.repdistiller.distiller_zoo import PKT, ABLoss, FactorTransfer, KDSVD, FSP, NSTLoss
-
-from thirdparty.repdistiller.helper.loops import train_distill, train_distill_hide, train_distill_linear, train_vanilla, train_negrad, train_bcu, train_bcu_distill, validate
-from thirdparty.repdistiller.helper.pretrain import init
-
-import copy
+from thirdparty.repdistiller.helper.loops import train_vanilla
 
 
 def finetune(model, data_loader, lr=0.01, epochs=10, quiet=False):

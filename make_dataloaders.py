@@ -353,38 +353,6 @@ def get_unlearn_loader(trainset, testset, forget_class, batch_size, num_forget, 
            train_forget_index, train_remain_index, test_forget_index, test_remain_index
 
 
-def get_relearn_loader_from_remain(train_remain_loader, batch_size, metadata_df, exclude_feature='Cirrus 800 FA'):
-    class_transforms = transforms.Compose([
-        transforms.Resize((512, 512)),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(15),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-        transforms.RandomResizedCrop(512),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-
-    relearn_indices = []
-
-    original_dataset = train_remain_loader.dataset.dataset
-
-    for idx in train_remain_loader.dataset.indices:
-        img_path, target = original_dataset.imgs[idx]
-        filename = os.path.basename(img_path)
-        if target == 0:  # DR class
-            relearn_indices.append(idx)
-        elif target == 1 and filename in metadata_df['de_FileName'].values:
-            if metadata_df[metadata_df['de_FileName'] == filename]['DeviceProc'].values[0] != exclude_feature:
-                relearn_indices.append(idx)
-
-    relearn_dataset = torch.utils.data.Subset(original_dataset, relearn_indices)
-    relearn_dataset.dataset.transform = class_transforms
-
-    relearn_loader = DataLoader(relearn_dataset, batch_size=batch_size, shuffle=True)
-
-    return relearn_loader
-
-
 def get_forget_loader(dt, forget_class):
     idx = []
     els_idx = []

@@ -104,7 +104,6 @@ def main(args):
         original_model = torch.load(args.original_model)
         retrained_model = torch.load(args.retrain_model)
         unlearned_model = torch.load(args.unlearn_model)
-        # save_unlearning_examples(unlearned_model, test_forget_loader, test_remain_loader, device, save_dir="example_images")
 
         models = [original_model, retrained_model, unlearned_model]
         titles = ['Original Model', 'Retrained Model', 'Unlearned Model']
