@@ -6,12 +6,15 @@ from euk import cfk_unlearn,euk_unlearn
 from neggrad import *
 from finetune import finetune
 from baseline_utils import *
-import sys
-sys.path.append('/home/unlearn-oph/deep_unlearning_2')
 from models import *
 
-from path_dicts import model_paths, selective_forget_models,chen_paths,ravi_paths,med_unlearn_paths
+from path_dicts import model_paths, selective_forget_models,chen_paths,ravi_paths,med_unlearn_paths, MODEL_CHECKPOINT_ROOT
 from tqdm import tqdm
+
+# Root directory for the (non-shippable) clinical imaging datasets used in
+# the sweep-mode loop below. Override via CLINICAL_DATA_ROOT if your data
+# lives elsewhere.
+CLINICAL_DATA_ROOT = os.environ.get('CLINICAL_DATA_ROOT', './data')
 
 
 def test(model, loader, idx_to_class, num_classes, device):
@@ -128,7 +131,7 @@ if __name__ == '__main__':
                         help='Number of SCRUB training epochs (sgda_epochs). Default: 5.')
     args, _ = parser.parse_known_args()
 
-    BASELINE_DIR = '/home/unlearn-oph/deep_unlearning_2/model_checkpoints/baseline_models'
+    BASELINE_DIR = f'{MODEL_CHECKPOINT_ROOT}/baseline_models'
 
     seed = 2022
     np.random.seed(seed)
@@ -302,31 +305,31 @@ if __name__ == '__main__':
 
 
                 if data_name == 'open_source':
-                    data_path = '/home/unlearn-oph/deep_unlearning_2/data/fundus_open_source'
+                    data_path = f'{CLINICAL_DATA_ROOT}/fundus_open_source'
 
                 elif data_name == 'mri':
-                    data_path = '/home/unlearn-oph/deep_unlearning_2/data/mri_unlearn'
+                    data_path = f'{CLINICAL_DATA_ROOT}/mri_unlearn'
 
                 elif data_name == 'ultrasound':
-                    data_path = '/home/unlearn-oph/deep_unlearning_2/data/ultrasound_unlearn_oversample'
+                    data_path = f'{CLINICAL_DATA_ROOT}/ultrasound_unlearn_oversample'
 
                 elif data_name == 'oct_4_class':
-                    data_path = '/home/unlearn-oph/deep_unlearning_2/data/oct_open_source'
+                    data_path = f'{CLINICAL_DATA_ROOT}/oct_open_source'
 
                 elif data_name == 'oculoplastic':
-                    data_path = '/home/unlearn-oph/deep_unlearning_2/data/oculoplastic'
+                    data_path = f'{CLINICAL_DATA_ROOT}/oculoplastic'
                     oculoplastics =True
                     if custom_unlearn:
-                        ted_df = pd.read_csv('/home/unlearn-oph/deep_unlearning_2/data/csvs_oculoplastic/mm_07022024_full_run_TED_GT_pix.csv')
-                        cfd_df = pd.read_csv('/home/unlearn-oph/deep_unlearning_2/data/csvs_oculoplastic/mm_07022024_full_run_CFD_GT_pix.csv')
+                        ted_df = pd.read_csv(f'{CLINICAL_DATA_ROOT}/csvs_oculoplastic/mm_07022024_full_run_TED_GT_pix.csv')
+                        cfd_df = pd.read_csv(f'{CLINICAL_DATA_ROOT}/csvs_oculoplastic/mm_07022024_full_run_CFD_GT_pix.csv')
                         combined_df = pd.concat([ted_df, cfd_df], ignore_index=True)
 
                 elif data_name == 'fundus_3_class':
-                    data_path = '/home/unlearn-oph/deep_unlearning_2/data/fundus_big'
+                    data_path = f'{CLINICAL_DATA_ROOT}/fundus_big'
                     if custom_unlearn:
-                        ord_df = pd.read_csv('/home/unlearn-oph/deep_unlearning_2/data/csvs_fundus/Other_Retinal_Disorders_UNIQUE_MRN_filtered.csv')
-                        dr_df = pd.read_csv('/home/unlearn-oph/deep_unlearning_2/data/csvs_fundus/Diabetic_Retinopathy_UNIQUE_MRN_filtered.csv')
-                        glauc_df = pd.read_csv('/home/unlearn-oph/deep_unlearning_2/data/csvs_fundus/Glaucoma_UNIQUE_MRN_filtered.csv')
+                        ord_df = pd.read_csv(f'{CLINICAL_DATA_ROOT}/csvs_fundus/Other_Retinal_Disorders_UNIQUE_MRN_filtered.csv')
+                        dr_df = pd.read_csv(f'{CLINICAL_DATA_ROOT}/csvs_fundus/Diabetic_Retinopathy_UNIQUE_MRN_filtered.csv')
+                        glauc_df = pd.read_csv(f'{CLINICAL_DATA_ROOT}/csvs_fundus/Glaucoma_UNIQUE_MRN_filtered.csv')
                         combined_df = pd.concat([ord_df, dr_df, glauc_df], ignore_index=True)
 
                 else:

@@ -13,7 +13,11 @@ import csv
 from medmnist import INFO
 import medmnist
 import sys
-sys.path.append('/home/unlearn-oph/deep_unlearning_2')
+# models.py lives at the repo root, one directory up from baselines/ - add
+# it to sys.path so this resolves regardless of the caller's working
+# directory (this replaces a hardcoded absolute path to the original
+# author's machine).
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models import *
 import matplotlib.pyplot as plt
 from sklearn.metrics import  accuracy_score
