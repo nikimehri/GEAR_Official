@@ -1,6 +1,7 @@
+import argparse
 import numpy as np
 import torch
-from scrub import scrub_met
+from scrub import scrub_met, scrub_unlearn
 from euk import cfk_unlearn,euk_unlearn
 from neggrad import *
 from finetune import finetune
@@ -13,13 +14,11 @@ from path_dicts import model_paths, selective_forget_models,chen_paths,ravi_path
 from tqdm import tqdm
 
 
-def test(model, loader, idx_to_class, num_classes, device): 
+def test(model, loader, idx_to_class, num_classes, device):
     model.eval()
     correct = [0] * num_classes
     cnt = [0] * num_classes
     class_accuracies = {}
-    # print('HERE')
-    # print(idx_to_class)
 
     with torch.no_grad():
         for _, (data, target) in enumerate(tqdm(loader, leave=False)):
@@ -27,8 +26,8 @@ def test(model, loader, idx_to_class, num_classes, device):
             target = target.to(device)
 
             output = model(data)
-            pred = output.argmax(dim=1, keepdim=True)  
-            
+            pred = output.argmax(dim=1, keepdim=True)
+
             for i in range(target.size(0)):
                 label = target[i].item()
                 if pred[i].item() == label:
@@ -39,7 +38,6 @@ def test(model, loader, idx_to_class, num_classes, device):
         accuracy = 0. if cnt[i] == 0 else correct[i] / cnt[i]
         class_name = idx_to_class[i]
         class_accuracies[class_name] = accuracy
-    # print(class_accuracies)
     return class_accuracies
 
 
@@ -48,14 +46,14 @@ def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, s
     _, test_acc = eval(model=model, data_loader=test_loader, device=device, name='test set all class')
     _, forget_acc = eval(model=model, data_loader=final_forget_loader, device=device, name='test set forget class')
     _, remain_acc = eval(model=model, data_loader=final_remain_loader, device=device, name='test set remain class')
-    
-    
+
+
     per_class_accs = test(model, test_loader, idx_to_class, num_classes, device)
 
     MIA = membership_inference_attack(model, test_loader, final_forget_loader, device, seed=seed)
 
     print(f"{name} -> Full test Acc: {test_acc:.5f} Forget Acc: {forget_acc:.5f} Remain Acc: {remain_acc:.5f} MIA: {np.mean(MIA):.2f}±{np.std(MIA):0.2f}")
-    
+
     return dict(
         test_error=float(test_acc),
         forget_error=float(forget_acc),
@@ -66,8 +64,69 @@ def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, s
     )
 
 
+def load_retrain_forget_acc(retrain_model_path, model_type, num_classes, data_name, forget_loader, device):
+    """Loads the retrain (gold-standard) checkpoint, if a path was given, and
+    returns its accuracy on forget_loader as a plain float. Used to give
+    scrub_unlearn a real target for its checkpoint-selection heuristic
+    (select the epoch whose forget accuracy is closest to what a model
+    retrained from scratch would have achieved). Returns None if no
+    retrain_model_path is available, so scrub_unlearn falls back to its
+    default (last-epoch) behavior."""
+    if not retrain_model_path:
+        return None
+    retrain_model = load_model(model_type, num_classes=num_classes, data_name=data_name).to(device)
+    retrain_model = load_model_state(retrain_model, retrain_model_path)
+    _, retrain_forget_acc = eval(model=retrain_model, data_loader=forget_loader, device=device)
+    return retrain_forget_acc.item() if isinstance(retrain_forget_acc, torch.Tensor) else float(retrain_forget_acc)
+
+
 if __name__ == '__main__':
 
+    parser = argparse.ArgumentParser("Baseline Unlearning")
+    # Experiment configuration
+    parser.add_argument('--data_name', type=str, default=None,
+                        help='Dataset name (e.g. cifar10, cifar100, fashionmnist)')
+    parser.add_argument('--model_name', type=str, default=None,
+                        help='Model type (e.g. resnet50, AllCNN)')
+    parser.add_argument('--original_model', type=str, default=None,
+                        help='Path to original trained model checkpoint')
+    parser.add_argument('--retrain_model', type=str, default=None,
+                        help='Path to retrained (gold-standard) model checkpoint')
+    parser.add_argument('--forget_class', type=int, default=0,
+                        help='Class index to forget')
+    parser.add_argument('--batch_size', type=int, default=8,
+                        help='Batch size for data loaders')
+    parser.add_argument('--gpu_id', type=int, default=0,
+                        help='GPU index to use')
+    parser.add_argument('--name', type=str, default='baseline',
+                        help='Experiment name prefix for output files')
+    parser.add_argument('--method', type=str, default='scrub',
+                        help='Comma-separated list of methods to run, e.g. scrub or finetune,scrub')
+    # SCRUB + CL+ES arguments
+    parser.add_argument('--feature_contrastive', action='store_true',
+                        help='Enable feature-space contrastive losses in SCRUB')
+    parser.add_argument('--use_entanglement_weighting', action='store_true',
+                        help='Enable entanglement-score weighting for rf_loss and targeted CE in SCRUB')
+    parser.add_argument('--retain_forget_weight', type=float, default=2.0,
+                        help='Weight for retain-forget cosine similarity loss')
+    parser.add_argument('--forget_forget_weight', type=float, default=3.0,
+                        help='Weight for forget-forget cosine similarity loss')
+    parser.add_argument('--feature_align_weight', type=float, default=0.0,
+                        help='Weight for retain-to-original feature alignment loss')
+    parser.add_argument('--gamma_rep', type=float, default=1.0,
+                        help='Weight on the combined contrastive/representation loss')
+    parser.add_argument('--remain_reg', type=float, default=3.5,
+                        help='Weight on the retain loss in SCRUB')
+    parser.add_argument('--centroid_refresh_interval', type=int, default=None,
+                        help='Steps between retain-centroid refreshes (default: one epoch)')
+    parser.add_argument('--beta_ce', type=float, default=0.0,
+                        help='Weight for targeted CE loss on the retain batch')
+    parser.add_argument('--target_layer', type=str, default='layer4',
+                        help='Layer for contrastive loss. Use "layer4" for ResNet, "9" for AllCNN, '
+                             '"all" for multi-layer ResNet')
+    parser.add_argument('--scrub_epochs', type=int, default=5,
+                        help='Number of SCRUB training epochs (sgda_epochs). Default: 5.')
+    args, _ = parser.parse_known_args()
 
     BASELINE_DIR = '/home/unlearn-oph/deep_unlearning_2/model_checkpoints/baseline_models'
 
@@ -75,34 +134,129 @@ if __name__ == '__main__':
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
-    
+
+    device = torch.device(f'cuda:{args.gpu_id}' if torch.cuda.is_available() else 'cpu')
+
+    # --- Single-experiment mode: triggered when --original_model is provided ---
+    # Bypasses the hardcoded path_dicts loop entirely.
+    if args.original_model is not None:
+        single_exp = {
+            'data_name':         args.data_name,
+            'model_type':        args.model_name,
+            'orig_model_path':   args.original_model,
+            'retrain_model_path': args.retrain_model,
+            'forget_class':      args.forget_class,
+            'batch_size':        args.batch_size,
+            'custom_unlearn':    False,
+            'oculoplastics':     False,
+            'data_path':         './data',
+        }
+        methods_single = [m.strip() for m in args.method.split(',')]
+        readouts = {}
+        SELECTIVE_UNLEARNING = False
+        combined_df = None
+
+        data_name      = single_exp['data_name']
+        model_type     = single_exp['model_type']
+        orig_model_path    = single_exp['orig_model_path']
+        retrain_model_path = single_exp['retrain_model_path']
+        forget_class   = single_exp['forget_class']
+        batch_size     = single_exp['batch_size']
+        custom_unlearn = single_exp['custom_unlearn']
+        oculoplastics  = single_exp['oculoplastics']
+        data_path      = single_exp['data_path']
+
+        trainset, testset, dataset = get_dataset(data_name, data_path)
+        train_loader, test_loader = get_dataloader(trainset, testset, batch_size, device=device)
+        num_classes, idx_to_class = set_num_classes(data_name, dataset)
+        total_forget_class = sum(1 for _, target in dataset if target == forget_class)
+        num_forget = total_forget_class
+        print(f"Number to Forget: {num_forget}")
+
+        train_forget_loader, train_remain_loader, test_forget_loader, test_remain_loader, repair_class_loader, \
+        train_forget_index, train_remain_index, test_forget_index, test_remain_index, train_dict, test_dict = dataloader_engine(
+            batch_size, trainset, testset, combined_df,
+            num_forget=num_forget, forget_class=forget_class,
+            oculoplastics=oculoplastics, custom_unlearn=custom_unlearn,
+            selective_unlearning=SELECTIVE_UNLEARNING)
+
+        final_forget_loader, final_remain_loader = get_forget_loader(testset, forget_class)
+
+        for unlearn_type in methods_single:
+            readouts[unlearn_type] = {data_name: {}}
+            model = load_model(model_type, num_classes=num_classes, data_name=data_name).to(device)
+            model = load_model_state(model, orig_model_path)
+
+            if unlearn_type == 'scrub':
+                print("Forgetting by SCRUB:")
+                teacher = model
+                student = model
+                target_forget_acc = load_retrain_forget_acc(
+                    retrain_model_path, model_type, num_classes, data_name, train_forget_loader, device
+                )
+                model_s, model_s_final = scrub_unlearn(
+                    teacher, student, train_remain_loader, train_forget_loader, model_type, data_name,
+                    sgda_epochs=args.scrub_epochs,
+                    feature_contrastive=args.feature_contrastive,
+                    use_entanglement_weighting=args.use_entanglement_weighting,
+                    target_layer=args.target_layer,
+                    retain_forget_weight=args.retain_forget_weight,
+                    forget_forget_weight=args.forget_forget_weight,
+                    feature_align_weight=args.feature_align_weight,
+                    gamma_rep=args.gamma_rep,
+                    remain_reg=args.remain_reg,
+                    centroid_refresh_interval=args.centroid_refresh_interval,
+                    beta_ce=args.beta_ce,
+                    num_classes=num_classes,
+                    target_forget_acc=target_forget_acc,
+                )
+                readouts[unlearn_type][data_name] = {
+                    "SCRUB-R": all_readouts(model_s, test_loader, final_forget_loader, final_remain_loader, name='SCRUB-R', seed=seed),
+                    "SCRUB":   all_readouts(model_s_final, test_loader, final_forget_loader, final_remain_loader, name='SCRUB', seed=seed),
+                }
+            elif unlearn_type == 'finetune':
+                print("Forgetting by Fine-tuning:")
+                finetune(model, train_remain_loader, epochs=10, quiet=True, lr=0.04)
+                readouts[unlearn_type][data_name] = all_readouts(model, test_loader, final_forget_loader, final_remain_loader, name='Finetune', seed=seed)
+            elif unlearn_type == 'neggrad':
+                print("Forgetting by NegGrad:")
+                negative_grad(model, train_remain_loader, train_forget_loader, alpha=0.9999, epochs=5, quiet=True, lr=0.01)
+                readouts[unlearn_type][data_name] = all_readouts(model, test_loader, final_forget_loader, final_remain_loader, name='NegGrad', seed=seed)
+            elif unlearn_type == 'cfk':
+                print("Forgetting by CFK:")
+                model_cfk = cfk_unlearn(model, train_remain_loader, model_type)
+                readouts[unlearn_type][data_name] = all_readouts(model_cfk, test_loader, final_forget_loader, final_remain_loader, name='CFK', seed=seed)
+            elif unlearn_type == 'euk':
+                print("Forgetting by EUK:")
+                model_euk = euk_unlearn(model, train_remain_loader, model_type)
+                readouts[unlearn_type][data_name] = all_readouts(model_euk, test_loader, final_forget_loader, final_remain_loader, name='EUK', seed=seed)
+            else:
+                print(f"Method '{unlearn_type}' not supported in single-experiment mode.")
+
+        import json
+        output_file = f"{args.name}_{data_name}_results.json"
+        with open(output_file, "w") as f:
+            json.dump(readouts, f, indent=4)
+        print(f"Results saved to {output_file}")
+        import sys; sys.exit(0)
+    # --- End single-experiment mode ---
+
     retain_bs = 32
     forget_bs = 16
     batch_size = 8
-    # readouts = {}
-    device = torch.device(f'cuda' if torch.cuda.is_available() else 'cpu')
 
-    # unlearn_type = 'scrub'
     methods = ['finetune', 'neggrad', 'cfk', 'euk', 'scrub','ravi', 'chen','eval_orig']
-    # methods = ['finetune', 'neggrad', 'cfk', 'euk', 'scrub','eval_orig']
-    # methods = ['ravi', 'chen']
-
-    # methods = [  ]
-    # methods = ['eval_orig' ]
 
     SELECTIVE_UNLEARNING = False
     oculoplastics =  False
     med_unlearn = True
     combined_df = None
 
-    # percentages = [.01, .1, .25, .5, .75]
-
-
     if SELECTIVE_UNLEARNING and not med_unlearn:
         model_paths = selective_forget_models
     if med_unlearn:
         model_paths = med_unlearn_paths
-    
+
     for i, (data_name, model_list) in enumerate(model_paths.items()):
         if data_name == 'mri':
             percentages = [.1, .25, .5, .75]
@@ -110,7 +264,6 @@ if __name__ == '__main__':
             percentages = [.01, .1, .25, .5, .75]
         else:
             percentages = [1]
-        # try:
         for unlearn_type in methods:
             readouts = {}
 
@@ -152,7 +305,7 @@ if __name__ == '__main__':
                     data_path = '/home/unlearn-oph/deep_unlearning_2/data/fundus_open_source'
 
                 elif data_name == 'mri':
-                    data_path = '/home/unlearn-oph/deep_unlearning_2/data/mri_unlearn' 
+                    data_path = '/home/unlearn-oph/deep_unlearning_2/data/mri_unlearn'
 
                 elif data_name == 'ultrasound':
                     data_path = '/home/unlearn-oph/deep_unlearning_2/data/ultrasound_unlearn_oversample'
@@ -167,7 +320,6 @@ if __name__ == '__main__':
                         ted_df = pd.read_csv('/home/unlearn-oph/deep_unlearning_2/data/csvs_oculoplastic/mm_07022024_full_run_TED_GT_pix.csv')
                         cfd_df = pd.read_csv('/home/unlearn-oph/deep_unlearning_2/data/csvs_oculoplastic/mm_07022024_full_run_CFD_GT_pix.csv')
                         combined_df = pd.concat([ted_df, cfd_df], ignore_index=True)
-                        # print(combined_df.head())
 
                 elif data_name == 'fundus_3_class':
                     data_path = '/home/unlearn-oph/deep_unlearning_2/data/fundus_big'
@@ -176,29 +328,29 @@ if __name__ == '__main__':
                         dr_df = pd.read_csv('/home/unlearn-oph/deep_unlearning_2/data/csvs_fundus/Diabetic_Retinopathy_UNIQUE_MRN_filtered.csv')
                         glauc_df = pd.read_csv('/home/unlearn-oph/deep_unlearning_2/data/csvs_fundus/Glaucoma_UNIQUE_MRN_filtered.csv')
                         combined_df = pd.concat([ord_df, dr_df, glauc_df], ignore_index=True)
-        
+
                 else:
                     data_path = './data'
 
                 print(f'EXPERIMENTAL REPORT: \ncustom unlearn :  {custom_unlearn}, \n data name : {data_name} \n oculoplastics : {oculoplastics} \n forget class : {forget_class} \n unlearn type : {unlearn_type} ')
-                
+
                 trainset, testset, dataset = get_dataset(data_name, data_path)
                 train_loader, test_loader = get_dataloader(trainset, testset, batch_size, device=device)
 
-                # set number of classes 
+                # set number of classes
                 num_classes, idx_to_class = set_num_classes(data_name, dataset)
                 total_forget_class = sum(1 for _, target in dataset if target == forget_class)
                 num_forget = int(total_forget_class * percentage)
                 print(f"Forget Percentage: {percentage}, Number to Forget: {num_forget}")
 
 
-                
+
                 train_forget_loader, train_remain_loader, test_forget_loader, test_remain_loader, repair_class_loader, \
-                train_forget_index, train_remain_index, test_forget_index, test_remain_index, train_dict, test_dict = dataloader_engine(batch_size, trainset, testset, 
-                                                                                                                combined_df, num_forget=num_forget, forget_class = forget_class, 
+                train_forget_index, train_remain_index, test_forget_index, test_remain_index, train_dict, test_dict = dataloader_engine(batch_size, trainset, testset,
+                                                                                                                combined_df, num_forget=num_forget, forget_class = forget_class,
                                                                                                                 oculoplastics=oculoplastics, custom_unlearn = custom_unlearn,
                                                                                                                 selective_unlearning = SELECTIVE_UNLEARNING)
-            
+
 
                 if SELECTIVE_UNLEARNING and not med_unlearn:
                     final_forget_loader = train_forget_loader
@@ -268,7 +420,25 @@ if __name__ == '__main__':
                     teacher = model
                     student = model
 
-                    model_s, model_s_final = scrub_met(teacher, student, train_remain_loader, train_forget_loader, model_type, data_name)
+                    target_forget_acc = load_retrain_forget_acc(
+                        retrain_model_path, model_type, num_classes, data_name, train_forget_loader, device
+                    )
+                    model_s, model_s_final = scrub_unlearn(
+                        teacher, student, train_remain_loader, train_forget_loader, model_type, data_name,
+                        sgda_epochs=args.scrub_epochs,
+                        feature_contrastive=args.feature_contrastive,
+                        use_entanglement_weighting=args.use_entanglement_weighting,
+                        target_layer=args.target_layer,
+                        retain_forget_weight=args.retain_forget_weight,
+                        forget_forget_weight=args.forget_forget_weight,
+                        feature_align_weight=args.feature_align_weight,
+                        gamma_rep=args.gamma_rep,
+                        remain_reg=args.remain_reg,
+                        centroid_refresh_interval=args.centroid_refresh_interval,
+                        beta_ce=args.beta_ce,
+                        num_classes=num_classes,
+                        target_forget_acc=target_forget_acc,
+                    )
                     if not SELECTIVE_UNLEARNING:
                         readouts[unlearn_type][data_name] = {
                             "SCRUB-R": all_readouts(model_s, test_loader, final_forget_loader, final_remain_loader, name='SCRUB-R', seed=seed),
@@ -308,7 +478,7 @@ if __name__ == '__main__':
                             ravi_ckpt = os.path.join(BASELINE_DIR, chen_paths[data_name][1])
                         if med_unlearn and not custom_unlearn:
                             ravi_ckpt = os.path.join(BASELINE_DIR, chen_paths[data_name][0])
-                        
+
                     print(f"Loading Ravi baseline from {ravi_ckpt}")
                     model_ravi = load_checkpoint_without_dataparallel(ravi_ckpt, model_ravi)
                     if not SELECTIVE_UNLEARNING:
@@ -323,18 +493,16 @@ if __name__ == '__main__':
 
                     if not SELECTIVE_UNLEARNING:
                         readouts[unlearn_type][data_name] = {
-                            # "Original": all_readouts(model, test_loader, test_forget_loader, test_remain_loader, name='Original', seed=seed),
                             "Retrain": all_readouts(model0, test_loader, final_forget_loader, final_remain_loader, name='Retrain', seed=seed)
                         }
                     else:
                         readouts[unlearn_type][data_name][str(percentage)] = {
-                            # "Original": all_readouts(model, test_loader, test_forget_loader, test_remain_loader, name='Original', seed=seed),
                             "Retrain": all_readouts(model0, test_loader, final_forget_loader, final_remain_loader, name='Retrain', seed=seed)
                         }
 
 
             import json
-            output_file = f"med_unlearn_{data_name}_{unlearn_type}_{custom_unlearn}_{forget_class}.json"  
+            output_file = f"med_unlearn_{data_name}_{unlearn_type}_{custom_unlearn}_{forget_class}.json"
             with open(output_file, "w") as f:
                 json.dump(readouts, f, indent=4)
             custom_unlearn= False
