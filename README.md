@@ -63,9 +63,7 @@ are relative to a `MODEL_CHECKPOINT_ROOT` environment variable (defaults to
 export MODEL_CHECKPOINT_ROOT=/path/to/your/checkpoints
 ```
 
-Similarly, `baselines/baseline_main.py`'s sweep mode reads clinical dataset
-directories from `CLINICAL_DATA_ROOT` (defaults to `./data`). Note the
-clinical imaging datasets themselves aren't distributed with this repo (see
+Note the clinical imaging datasets aren't distributed with this repo (see
 [Data and Model Availability](#data-and-model-availability)) — the
 open-source datasets (CIFAR-10/100, FashionMNIST, SVHN, MedMNIST) download
 automatically via `torchvision`/`medmnist` on first use.
