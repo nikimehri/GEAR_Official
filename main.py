@@ -73,7 +73,7 @@ def main(args):
         trainset_full, [train_size, val_size], generator=split_generator
     )
 
-    train_loader, test_loader = get_dataloader(trainset, testset, args.batch_size, device=device)
+    train_loader, test_loader = get_dataloader(trainset, testset, args.batch_size)
     val_loader = DataLoader(valset, batch_size=args.batch_size, shuffle=True)
 
     # set number of classes

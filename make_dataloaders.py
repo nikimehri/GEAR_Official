@@ -2,15 +2,11 @@ import os
 import random
 import torch
 from torch.utils.data import DataLoader, SubsetRandomSampler
-from torchvision import datasets
-import torchvision.transforms as transforms
-import numpy as np
-import pandas as pd
-from datetime import datetime
-from utils import *
-from medmnist import INFO, Evaluator
-import medmnist
 from torchvision import datasets, transforms
+import numpy as np
+from utils import *
+from medmnist import INFO
+import medmnist
 
 def resize_width_pad_height(target_width=512, target_height=512):
     def transform(image):
@@ -31,11 +27,6 @@ def resize_width_pad_height(target_width=512, target_height=512):
     return transform
 
 def get_dataset(data_name, path='./data'):
-    if data_name == 'dr_grade':
-        img_size = 36
-    else:
-        img_size = 512
-
     if data_name == 'mnist':
         transform = transforms.Compose([
             transforms.ToTensor(),
@@ -224,7 +215,7 @@ def get_dataset(data_name, path='./data'):
 
         return trainset, testset, dataset
 
-def get_dataloader(trainset, testset, batch_size, device):
+def get_dataloader(trainset, testset, batch_size):
 
     train_loader = DataLoader(dataset=trainset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(dataset=testset, batch_size=batch_size, shuffle=True)
@@ -237,7 +228,7 @@ def split_class_data(dataset, forget_class, num_forget):
     remain_index = []
     sum = 0
 
-    for i, (data, target) in enumerate(dataset):
+    for i, (_, target) in enumerate(dataset):
         if target == forget_class and sum < num_forget:
             forget_index.append(i)
 
@@ -356,14 +347,9 @@ def get_unlearn_loader(trainset, testset, forget_class, batch_size, num_forget, 
 def get_forget_loader(dt, forget_class):
     idx = []
     els_idx = []
-    count = 0
     for i in range(len(dt)):
         _, lbl = dt[i]
         if lbl == forget_class:
-            # if forget:
-            #     count += 1
-            #     if count > forget_num:
-            #         continue
             idx.append(i)
         else:
             els_idx.append(i)
