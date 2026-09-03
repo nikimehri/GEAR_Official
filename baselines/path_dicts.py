@@ -1,3 +1,8 @@
+"""Pure data module (no functions): checkpoint-path lookup tables used by
+baseline_main.py's sweep mode to find each dataset's original/retrain/
+baseline-comparison checkpoints. Most entries are commented out - only the
+datasets currently being swept are left active."""
+
 import os
 
 # All checkpoint paths below are relative to MODEL_CHECKPOINT_ROOT, which

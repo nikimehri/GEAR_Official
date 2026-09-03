@@ -12,6 +12,9 @@ from thirdparty.repdistiller.helper.loops import train_vanilla
 
 
 def finetune(model, data_loader, lr=0.01, epochs=10, quiet=False):
+    """Simplest unlearning baseline: just keep training on the remain set
+    (data_loader) and hope the forgotten class's influence fades via
+    catastrophic forgetting. No forget-set-specific loss at all."""
     loss_fn = nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=0.0)
     for epoch in range(epochs):

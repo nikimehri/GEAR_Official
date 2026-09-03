@@ -186,6 +186,7 @@ def compute_loss_threshold_mia(model, member_loader, nonmember_loader, device):
 # =============================================================================
 
 def eval_model(model, data_loader, device='cpu'):
+    """Overall accuracy over a full loader pass."""
     model.eval()
     y_true = []
     y_predict = []
@@ -212,6 +213,7 @@ def eval_model(model, data_loader, device='cpu'):
 # =============================================================================
 
 def get_cifar100(data_root):
+    """Standard normalized CIFAR-100 train/test sets, used for evaluation."""
     train_transform = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
@@ -234,6 +236,8 @@ def get_cifar100(data_root):
 # FIX 1a: raw [0,1] variant for the retain loader passed into coun().
 # Color augs must run on [0,1] data; simclr_transform appends Normalize itself.
 def get_cifar100_coun(data_root):
+    """Raw [0,1] (un-normalized) CIFAR-100 train set for coun()'s retain
+    loader - simclr_transform expects raw pixels and normalizes itself."""
     coun_train_transform = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
@@ -245,6 +249,8 @@ def get_cifar100_coun(data_root):
 
 
 def split_class_data(dataset, forget_class, num_forget):
+    """Splits a dataset's indices into forget/remain/class_remain index
+    lists (same idea as make_dataloaders.split_class_data)."""
     forget_index = []
     class_remain_index = []
     remain_index = []

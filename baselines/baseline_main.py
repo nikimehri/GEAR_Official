@@ -18,6 +18,8 @@ CLINICAL_DATA_ROOT = os.environ.get('CLINICAL_DATA_ROOT', './data')
 
 
 def test(model, loader, idx_to_class, num_classes, device):
+    """Per-class accuracy over a full loader pass, returned as
+    {class_name: accuracy}."""
     model.eval()
     correct = [0] * num_classes
     cnt = [0] * num_classes
@@ -46,6 +48,9 @@ def test(model, loader, idx_to_class, num_classes, device):
 
 
 def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, seed=2022, name='method'):
+    """Standard "report card" for any unlearned model: overall test/forget/
+    remain accuracy, per-class accuracy, and a membership-inference-attack
+    score. Called once per baseline method after it's finished running."""
     _, test_acc = eval(model=model, data_loader=test_loader, device=device, name='test set all class')
     _, forget_acc = eval(model=model, data_loader=final_forget_loader, device=device, name='test set forget class')
     _, remain_acc = eval(model=model, data_loader=final_remain_loader, device=device, name='test set remain class')

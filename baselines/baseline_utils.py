@@ -1,50 +1,45 @@
 import os
+import sys
 import random
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader, SubsetRandomSampler
 from torchvision import datasets, transforms
-from medmnist import INFO, Evaluator
-from torchvision import datasets
-import torchvision.transforms as transforms
-import numpy as np
-import pandas as pd
-from datetime import datetime
-import csv
 from medmnist import INFO
 import medmnist
-import sys
+import numpy as np
+from datetime import datetime
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import cross_val_score, StratifiedShuffleSplit
+from sklearn.metrics import accuracy_score
+
 # models.py lives at the repo root, one directory up from baselines/ - add
 # it to sys.path so this resolves regardless of the caller's working
 # directory (this replaces a hardcoded absolute path to the original
 # author's machine).
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models import *
-import matplotlib.pyplot as plt
-from sklearn.metrics import  accuracy_score
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import cross_val_score
-from sklearn.model_selection import StratifiedShuffleSplit
-from sklearn.metrics import confusion_matrix
-import random
-import numpy as np
-import torch
-import torch.nn as nn
-import seaborn as sns
+
 
 def seed_torch(seed=2022):
+    """Seeds numpy/torch RNGs and forces deterministic cuDNN kernels."""
     np.random.seed(seed)
     # os.environ['PYTHONHASHSEED'] = str(seed)
-    np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
 
 
 def create_dir(dir_name):
+    """Makes dir_name if it doesn't already exist (idempotent)."""
     if not os.path.exists(dir_name):
         os.makedirs(dir_name)
 
 def set_num_classes(data_name, dataset):
+    """Baselines-subsystem counterpart of utils.set_num_classes, taking a
+    plain data_name string instead of an args namespace."""
     if data_name == 'oct_4_class':
         num_classes = 4
     elif data_name == 'fundus_3_class':
@@ -63,6 +58,8 @@ def set_num_classes(data_name, dataset):
         num_classes = 4
     elif data_name == 'medmnist':
         num_classes = 9
+    elif data_name == 'cifar100':
+        num_classes = 100
     else:
         num_classes = 10
 
@@ -80,6 +77,8 @@ def set_num_classes(data_name, dataset):
 
 
 def split_class_data(dataset, forget_class, num_forget):
+    """Splits a dataset's indices into forget/remain/class_remain (leftover
+    same-class samples beyond num_forget) index lists."""
     forget_index = []
     class_remain_index = []
     remain_index = []
@@ -104,7 +103,7 @@ def split_class_data(dataset, forget_class, num_forget):
 
 
 def get_unlearn_loader(trainset, testset, forget_class, batch_size, num_forget, selective_unlearning = False, repair_num_ratio=0.01):
-
+    """Baselines-subsystem counterpart of make_dataloaders.get_unlearn_loader."""
     train_forget_index, train_remain_index, class_remain_index = split_class_data(trainset, forget_class,
                                                                                   num_forget=num_forget)
     
@@ -145,6 +144,8 @@ def get_unlearn_loader(trainset, testset, forget_class, batch_size, num_forget, 
 
 
 def get_custom_forget_loader_oculoplastics(dataset, metadata_dict, batch_size=8):
+    """Baselines-subsystem counterpart of
+    make_dataloaders.get_custom_forget_loader_oculoplastics."""
     forget_indices = []
     remain_indices = []
 
@@ -176,6 +177,8 @@ def get_custom_forget_loader_oculoplastics(dataset, metadata_dict, batch_size=8)
 
 
 def get_custom_forget_loader(dataset, metadata_dict, attribute_to_forget, batch_size=8):
+    """Baselines-subsystem counterpart of
+    make_dataloaders.get_custom_forget_loader."""
     forget_indices = []
     remain_indices = []
 
@@ -211,6 +214,10 @@ def get_custom_forget_loader(dataset, metadata_dict, attribute_to_forget, batch_
 
 
 def dataloader_engine(batch_size, trainset, testset, combined_df, num_forget=5000, forget_class = 0, custom_unlearn=False, oculoplastics = False, selective_unlearning = False):
+    """Baselines-subsystem entry point used by baseline_main.py - builds
+    train/test forget+remain loaders (no validation split, unlike
+    make_dataloaders.dataloader_engine; note the positional argument order
+    also differs between the two)."""
     if custom_unlearn and not oculoplastics:
         print('Getting CUSTOM Unlearn Loader using OHE of Metadata')
         train_dict = map_metadata(trainset, combined_df)
@@ -243,6 +250,7 @@ def dataloader_engine(batch_size, trainset, testset, combined_df, num_forget=500
         train_forget_index, train_remain_index, test_forget_index, test_remain_index, train_dict, test_dict
 
 def map_metadata(dataset, df):
+    """Baselines-subsystem counterpart of utils.map_metadata."""
     metadata_dict = {}
     print('in map metadata')
     print(len(dataset.dataset.imgs))
@@ -256,6 +264,8 @@ def map_metadata(dataset, df):
     return metadata_dict
 
 def get_custom_unlearn_loader_oculoplastics(trainset, testset, train_dict, test_dict, batch_size, num_forget=1000, repair_num_ratio=0.01):
+    """Baselines-subsystem counterpart of
+    make_dataloaders.get_custom_unlearn_loader_oculoplastics."""
     train_forget_index, train_remain_index = split_metadata_data_oculoplastics(trainset, train_dict, num_forget)
     test_forget_index, test_remain_index = split_metadata_data_oculoplastics(testset, test_dict, num_forget=len(testset.dataset.imgs))
 
@@ -287,6 +297,8 @@ def get_custom_unlearn_loader_oculoplastics(trainset, testset, train_dict, test_
 
 
 def split_metadata_data_oculoplastics(subset, metadata_dict, num_forget):
+    """Baselines-subsystem counterpart of
+    make_dataloaders.split_metadata_data_oculoplastics."""
     forget_index = []
     remain_index = []
     sum = 0
@@ -310,10 +322,11 @@ def split_metadata_data_oculoplastics(subset, metadata_dict, num_forget):
 
 
 def create_ohe_vector(row):
+    """Baselines-subsystem counterpart of utils.create_ohe_vector."""
     attributes = ['OS', 'OD', 'Spectralis (Scans)', 'Cirrus 800 FA', '2015', '2016', '2017', '2018']
 
     ohe_vector = [0] * len(attributes)
-    
+
     if row['WhichEye'].values[0] == 'OS':
         ohe_vector[0] = 1
     elif row['WhichEye'].values[0] == 'OD':
@@ -341,6 +354,8 @@ def create_ohe_vector(row):
 
 
 def map_metadata_oculoplastics(dataset, df, feature='vert_pf', threshold=11):
+    """Baselines-subsystem counterpart of
+    make_dataloaders.map_metadata_oculoplastics."""
     metadata_dict = {}
     for img_path, _ in dataset.dataset.imgs:
         filename = os.path.basename(img_path)
@@ -360,6 +375,8 @@ def map_metadata_oculoplastics(dataset, df, feature='vert_pf', threshold=11):
 
 
 def get_custom_unlearn_loader(trainset, testset, train_dict, test_dict, unlearn_attribute, batch_size):
+    """Baselines-subsystem counterpart of
+    make_dataloaders.get_custom_unlearn_loader."""
     num_forget = 1000
     repair_num_ratio = 0.01  
     
@@ -392,6 +409,7 @@ def get_custom_unlearn_loader(trainset, testset, train_dict, test_dict, unlearn_
 
 
 def split_metadata_data(subset, metadata_dict, unlearn_attribute, num_forget):
+    """Baselines-subsystem counterpart of make_dataloaders.split_metadata_data."""
     attributes = ['OS', 'OD', 'Spectralis (Scans)', 'Cirrus 800 FA', '2015', '2016', '2017', '2018']
     attr_index = attributes.index(unlearn_attribute)
     
@@ -421,6 +439,8 @@ def split_metadata_data(subset, metadata_dict, unlearn_attribute, num_forget):
 
 
 def resize_width_pad_height(target_width=512, target_height=512):
+    """Baselines-subsystem counterpart of
+    make_dataloaders.resize_width_pad_height."""
     def transform(image):
         aspect_ratio = image.width / image.height
         new_height = int(round(target_width / aspect_ratio))
@@ -441,6 +461,9 @@ def resize_width_pad_height(target_width=512, target_height=512):
 
 
 def get_dataset(data_name, path='./data'):
+    """Baselines-subsystem counterpart of make_dataloaders.get_dataset - a
+    more limited dataset zoo (no mnist/svhn/oculoplastic-specific branch;
+    the else branch covers any other ImageFolder-compatible directory)."""
 
     if data_name == 'cifar10':
         train_transform = transforms.Compose([
@@ -449,15 +472,31 @@ def get_dataset(data_name, path='./data'):
             transforms.ToTensor(),
             transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))  # CIFAR-10 normalization
         ])
-        
+
         test_transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
         ])
-        
+
         trainset = datasets.CIFAR10(root=path, train=True, download=True, transform=train_transform)
         testset = datasets.CIFAR10(root=path, train=False, download=True, transform=test_transform)
         dataset = datasets.CIFAR10(root=path, train=False, download=True, transform=transforms.Compose([transforms.ToTensor()]))
+        return trainset, testset, dataset
+
+    elif data_name == 'cifar100':
+        train_transform = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761))
+        ])
+        test_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761))
+        ])
+        trainset = datasets.CIFAR100(root=path, train=True, download=True, transform=train_transform)
+        testset = datasets.CIFAR100(root=path, train=False, download=True, transform=test_transform)
+        dataset = datasets.CIFAR100(root=path, train=False, download=True, transform=transforms.Compose([transforms.ToTensor()]))
         return trainset, testset, dataset
 
     elif data_name == 'fashionmnist':
@@ -572,17 +611,26 @@ def get_forget_loader(dt, forget_class):
 
 
 def load_model(model_type, num_classes, data_name, n_channels=3, size=32, batch_norm=True):
+    """Constructs an AllCNN or CustomResNet by string name. cifar_stem is
+    applied to both resnet and resnet50 (matching trainer.py's model
+    construction) so a CIFAR-trained ResNet always gets the small-image
+    stem regardless of which of the two names it was saved under."""
     if model_type == 'allcnn':
         if data_name == 'fashionmnist':
             n_channels = 1
         model = AllCNN(n_channels=n_channels, num_classes=num_classes, size=size, batch_norm=batch_norm)
-    elif model_type == 'resnet':
-        model = CustomResNet(num_classes=num_classes)
+    elif model_type in ('resnet', 'resnet50'):
+        cifar_stem = data_name in ('cifar10', 'cifar100')
+        model = CustomResNet(num_classes=num_classes, cifar_stem=cifar_stem)
     return model
 
 
-def load_model_state(model, checkpoint_path):
-    checkpoint = torch.load(checkpoint_path)
+def load_model_state(model, checkpoint_path, map_location=None):
+    """Loads a checkpoint (full model object, DataParallel-wrapped model, or
+    raw state dict) and applies its weights to model, stripping any
+    'module.' DataParallel prefix. weights_only=False is required since
+    these checkpoints are full pickled model objects, not plain state dicts."""
+    checkpoint = torch.load(checkpoint_path, weights_only=False, map_location=map_location)
 
     if isinstance(checkpoint, torch.nn.DataParallel):
         state_dict = checkpoint.module.state_dict()
@@ -602,7 +650,10 @@ def load_model_state(model, checkpoint_path):
 
 
 def load_checkpoint_without_dataparallel(checkpoint_path, model):
-    checkpoint = torch.load(checkpoint_path)
+    """Used for the pre-baked Chen/Ravi competitor checkpoints: same
+    DataParallel/state-dict normalization as load_model_state, via a
+    slightly different code path."""
+    checkpoint = torch.load(checkpoint_path, weights_only=False)
     if isinstance(checkpoint, torch.nn.DataParallel):
         checkpoint = checkpoint.module.state_dict()
     elif not isinstance(checkpoint, dict):  
@@ -621,22 +672,10 @@ def load_checkpoint_without_dataparallel(checkpoint_path, model):
 
 
 def cm_score(estimator, X, y):
+    """Custom sklearn scorer (accuracy) used as evaluate_attack_model's
+    cross_val_score scoring function."""
     y_pred = estimator.predict(X)
-    cnf_matrix = confusion_matrix(y, y_pred)
-    # print(cnf_matrix)
-    FP = cnf_matrix[0][1] 
-    FN = cnf_matrix[1][0] 
-    TP = cnf_matrix[0][0] 
-    TN = cnf_matrix[1][1]
-
-
-    # Overall accuracy
-    ACC = (TP+TN)/(TP+FP+FN+TN)
-    # print (f"FPR:{FPR:.2f}, FNR:{FNR:.2f}, FP{FP:.2f}, TN{TN:.2f}, TP{TP:.2f}, FN{FN:.2f}")
-    # return ACC
-    acc = accuracy_score(y, y_pred)
-    # print("Accuracy:", f"{acc:.2f}")
-    return acc
+    return accuracy_score(y, y_pred)
 
 
 def evaluate_attack_model(sample_loss,
@@ -731,7 +770,9 @@ def membership_inference_attack(model, test_loader, forget_loader, device, seed=
     return score
 
 def eval(model, data_loader, batch_size=64, device='cpu', name=''):
-    model.eval() 
+    """Overall accuracy over a full loader pass. Returns
+    (sklearn accuracy_score, tensor accuracy)."""
+    model.eval()
     y_true = []
     y_predict = []
     for step, (batch_x, batch_y) in enumerate(data_loader):

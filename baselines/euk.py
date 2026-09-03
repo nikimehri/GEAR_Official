@@ -9,6 +9,10 @@ import copy
 
 
 def cfk_unlearn(model_cfk, r_loader, model_name):
+    """CF-k (Catastrophic Forgetting-k) baseline: freezes every parameter
+    except the last conv/residual block, then fine-tunes only that block on
+    the remain set. The idea is that forgetting is concentrated in the last
+    block, so retraining just it approximates full retraining cheaply."""
     lr_decay_epochs = [10,15,20]
     cfk_lr = 0.01
     cfk_epochs = 10
@@ -38,6 +42,10 @@ def cfk_unlearn(model_cfk, r_loader, model_name):
 
 
 def euk_unlearn(model, r_loader, model_name):
+    """EU-k (Exact Unlearning-k) baseline: like CF-k, but first resets the
+    last block's weights back to model_initial before fine-tuning it on the
+    remain set - intended to more aggressively remove whatever that block
+    learned before retraining it fresh."""
     lr_decay_epochs = [10,15,20]
     euk_lr = 0.01
     euk_epochs = 10
@@ -126,6 +134,8 @@ def euk_unlearn(model, r_loader, model_name):
 
 
 def fk_fientune(model, data_loader,lr_decay_epochs, lr=0.01, epochs=10, quiet=False):
+    """Shared fine-tuning loop used by both cfk_unlearn and euk_unlearn:
+    plain SGD with a step-decay schedule."""
     loss_fn = nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=0.0)
     for epoch in range(epochs):
