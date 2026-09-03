@@ -1,11 +1,6 @@
 import os
-import random
 import torch
-from torch.utils.data import DataLoader, SubsetRandomSampler
-from torchvision import datasets
-import torchvision.transforms as transforms
 import numpy as np
-import pandas as pd
 from datetime import datetime
 import csv
 from medmnist import INFO

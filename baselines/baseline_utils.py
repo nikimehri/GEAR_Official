@@ -589,14 +589,9 @@ def get_dataloader(trainset, testset, batch_size, device):
 def get_forget_loader(dt, forget_class):
     idx = []
     els_idx = []
-    count = 0
     for i in range(len(dt)):
         _, lbl = dt[i]
         if lbl == forget_class:
-            # if forget:
-            #     count += 1
-            #     if count > forget_num:
-            #         continue
             idx.append(i)
         else:
             els_idx.append(i)

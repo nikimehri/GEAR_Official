@@ -129,7 +129,7 @@ def main():
     print(f'  Range: [{min(means):.4f}, {max(means):.4f}]')
 
     sorted_seeds = sorted(all_results.items(), key=lambda x: x[1]['mean'])
-    print(f'\nSeeds ranked by mean initial e_i (low → high):')
+    print('\nSeeds ranked by mean initial e_i (low → high):')
     for seed, r in sorted_seeds:
         print(f'  Seed {seed}: mean={r["mean"]:.4f}, '
               f'% entangled (>0.5)={r["pct_above_0.5"]:.1f}%')

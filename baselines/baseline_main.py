@@ -1,7 +1,7 @@
 import argparse
 import numpy as np
 import torch
-from scrub import scrub_met, scrub_unlearn
+from scrub import scrub_unlearn
 from euk import cfk_unlearn,euk_unlearn
 from neggrad import *
 from finetune import finetune
@@ -483,9 +483,9 @@ if __name__ == '__main__':
                         ravi_ckpt = model_list['ravi'][str(percentage)]
                     else:
                         if med_unlearn and custom_unlearn:
-                            ravi_ckpt = os.path.join(BASELINE_DIR, chen_paths[data_name][1])
+                            ravi_ckpt = os.path.join(BASELINE_DIR, ravi_paths[data_name][1])
                         if med_unlearn and not custom_unlearn:
-                            ravi_ckpt = os.path.join(BASELINE_DIR, chen_paths[data_name][0])
+                            ravi_ckpt = os.path.join(BASELINE_DIR, ravi_paths[data_name][0])
 
                     print(f"Loading Ravi baseline from {ravi_ckpt}")
                     model_ravi = load_checkpoint_without_dataparallel(ravi_ckpt, model_ravi)

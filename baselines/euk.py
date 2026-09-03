@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-from baseline_utils import *
 from thirdparty.repdistiller.helper.util import adjust_learning_rate as sgda_adjust_learning_rate
 from thirdparty.repdistiller.helper.loops import train_vanilla
 

@@ -1,14 +1,9 @@
 import time
-from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
+from sklearn.metrics import accuracy_score
 import torch
 from torch import nn, optim
 from tqdm import tqdm
 from models import AllCNN, CustomResNet
-import torch.nn.functional as F
-import matplotlib.pyplot as plt
-from torchvision.models import resnet50, ResNet50_Weights
-# from linformer import Linformer
-# from vit_pytorch.efficient import ViT
 import csv
 import timm
 from torchvision import datasets

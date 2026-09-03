@@ -1,12 +1,10 @@
 import copy
-import utils
 from trainer import eval
 import numpy as np
 import torch
 from torch import nn
 import tqdm
 import time
-import pandas as pd
 from make_dataloaders import *
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
