@@ -10,29 +10,57 @@ from torchvision.models import resnet50, ResNet50_Weights
 # from linformer import Linformer
 # from vit_pytorch.efficient import ViT
 import csv
-import timm 
+import timm
 from torchvision import datasets
 from sklearn.utils.class_weight import compute_class_weight
 import numpy as np
+import os
 
 
-def loss_picker(loss, train_loader=None, device='cpu'):
+def load_checkpoint(path, checkpoint_label, device=None):
+    """Loads a full pickled model checkpoint, unwrapping DataParallel if
+    needed. Raises a clear, specific error instead of the bare torch.load
+    call's confusing default errors when the path is missing or unset."""
+    if path is None:
+        raise ValueError(
+            f"Missing checkpoint path for {checkpoint_label}. "
+            f"Pass the matching --{checkpoint_label} argument."
+        )
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Checkpoint for {checkpoint_label} was not found: {path}"
+        )
+
+    model = torch.load(path, map_location=torch.device('cpu'), weights_only=False)
+    if isinstance(model, nn.DataParallel):
+        model = model.module
+    if device is not None:
+        model = model.to(device)
+    return model
+
+
+def loss_picker(loss, train_loader=None, device='cpu', forget_class=None, num_classes=None):
     if loss == 'mse':
         criterion = nn.MSELoss()
     elif loss == 'cross':
         if train_loader is not None:
-            # Extract labels from the train_loader
             train_labels = []
             for _, labels in train_loader:
-                train_labels.extend(labels.numpy())  
-
-            # Compute class weights
-            class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(train_labels), y=train_labels)
-            class_weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
-
-            # Define the CrossEntropyLoss with class weights
-            criterion = nn.CrossEntropyLoss(weight=class_weights)
-            class_weights.to('cpu')
+                train_labels.extend(labels.numpy())
+            unique_classes = np.unique(train_labels)
+            raw_weights = compute_class_weight(
+                class_weight='balanced', classes=unique_classes, y=train_labels
+            )
+            # Size the weight tensor to the true num_classes (not just the
+            # classes observed in this loader) so weights stay correctly
+            # aligned to class index even when a class is entirely absent
+            # from train_labels (e.g. the forget class in a remain-only loader).
+            weight_tensor = torch.ones(num_classes, dtype=torch.float32)
+            for cls, w in zip(unique_classes, raw_weights):
+                weight_tensor[cls] = w
+            if forget_class is not None:
+                weight_tensor[forget_class] = 0.0
+            criterion = nn.CrossEntropyLoss(weight=weight_tensor.to(device))
         else:
             criterion = nn.CrossEntropyLoss()
     else:
@@ -48,8 +76,8 @@ def optimizer_picker(optimization, param, lr, momentum=0.):
         print('Using SGD for optimization')
         optimizer = optim.SGD(param, lr=lr, momentum=momentum, weight_decay=1e-4)
     else:
-        print("NOTHING SELECTED FOR OPTIMZER")
-        
+        raise ValueError(f"Unknown optimizer '{optimization}', expected 'adam' or 'sgd'")
+
     return optimizer
 
 def train(model, data_loader, criterion, optimizer, loss_mode, device='cpu'):
@@ -63,34 +91,34 @@ def train(model, data_loader, criterion, optimizer, loss_mode, device='cpu'):
         batch_y = batch_y.to(device)
 
         if len(batch_y.shape) > 1:
-            batch_y = batch_y.squeeze()  
+            batch_y = batch_y.squeeze()
 
         optimizer.zero_grad()
-        
-        output = model(batch_x) 
+
+        output = model(batch_x)
 
 
         if loss_mode == "mse":
-            loss = criterion(output, batch_y)  
+            loss = criterion(output, batch_y)
         elif loss_mode == "cross":
-            loss = criterion(output, batch_y)  
+            loss = criterion(output, batch_y)
         elif loss_mode == 'neg_grad':
             loss = -criterion(output, batch_y)
- 
+
         loss.backward()
         optimizer.step()
         running_loss += loss
     return running_loss
 
 
-def train_save_model(train_loader, test_loader, model_name, optim_name, learning_rate, num_epochs, device, path, dataset=None, relearning=False, unlearned_model=None, data_name=None):
+def train_save_model(train_loader, val_loader, model_name, optim_name, learning_rate, num_epochs, device, path, dataset=None, relearning=False, unlearned_model=None, data_name=None, forget_class=None):
     start = time.time()
     losses = []
     accuracies = []
-    
+
     if dataset:
         if isinstance(dataset, datasets.SVHN):
-            original_targets = dataset.labels  
+            original_targets = dataset.labels
         elif isinstance(dataset, (datasets.MNIST, datasets.CIFAR10)):
             if isinstance(dataset.targets, torch.Tensor):
                 original_targets = dataset.targets.tolist()
@@ -100,109 +128,92 @@ def train_save_model(train_loader, test_loader, model_name, optim_name, learning
             original_targets = [dataset.imgs[i][1] for i in range(len(dataset))]
 
         if data_name == 'medmnist':
-            num_classes = 9
+            num_classes = 9  # medmnist always has 9 classes; forget_class guard not applied
         else:
             num_classes = len(set(original_targets))
+            if forget_class is not None and forget_class not in set(original_targets):
+                num_classes += 1
             print(num_classes)
     else:
         num_classes = max(train_loader.dataset.targets) + 1
+        if forget_class is not None and forget_class not in set(train_loader.dataset.targets):
+            num_classes += 1
 
 
-    if model_name == 'resnet':
-        model = CustomResNet(num_classes=num_classes)
-        model = nn.DataParallel(model) 
+    if model_name in ('resnet', 'resnet50'):
+        cifar_stem = data_name in ('cifar10', 'cifar100')
+        model = CustomResNet(num_classes=num_classes, cifar_stem=cifar_stem)
+        model = nn.DataParallel(model)
         model.to(device)
-        
+
     elif model_name == 'vit':
-        model = timm.create_model('vit_base_patch16_224', pretrained=True, img_size=512, patch_size=32)
-        model.head = nn.Linear(model.head.in_features, num_classes)  # Adjust the final layer
+        model = timm.create_model('vit_base_patch16_224', pretrained=True,
+                                   img_size=512, patch_size=32)
+        model.head = nn.Linear(model.head.in_features, num_classes)
         model.to(device)
 
-    elif model_name == 'MNISTNet':
-        model = MNISTNet()
-        model.to(device)
-    
     elif model_name == 'AllCNN':
         if data_name == 'fashionmnist':
-            model = AllCNN(n_channels=1, num_classes=num_classes) 
-        elif data_name =='medmnist':
-            model = AllCNN(n_channels=3, num_classes=num_classes) 
-        elif data_name =='svhn':
-            model = AllCNN(n_channels=3, num_classes=num_classes)  
-        elif data_name =='cifar10':
-            model = AllCNN(n_channels=3, num_classes=num_classes)  
-
-        model = nn.DataParallel(model) 
+            model = AllCNN(n_channels=1, num_classes=num_classes)
+        elif data_name in ('medmnist', 'svhn', 'cifar10'):
+            model = AllCNN(n_channels=3, num_classes=num_classes)
+        else:
+            raise ValueError(f"AllCNN not configured for data_name='{data_name}'")
+        model = nn.DataParallel(model)
         model.to(device)
 
+    else:
+        raise ValueError(f"Unknown model_name: '{model_name}'")
 
-    criterion = loss_picker('cross')
+
+    criterion = loss_picker('cross', train_loader=train_loader, device=device, forget_class=forget_class, num_classes=num_classes)
     optimizer = optimizer_picker(optim_name, model.parameters(), lr=learning_rate, momentum=0.9)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs) if model_name in ('resnet', 'resnet50') else None
 
     best_acc = 0
-    SAVE = 30
-    
+
     for epo in range(num_epochs):
         print('EPOCH:{}'.format(epo+1))
         loss = train(model=model, data_loader=train_loader, criterion=criterion, optimizer=optimizer, loss_mode='cross',
               device=device)
-        
+
         print(f'training loss is: {loss}')
         losses.append(loss.item() / len(train_loader))
 
 
-        _, acc = eval(model=model, data_loader=test_loader, mode='', print_perform=False, device=device)
-        accuracies.append(acc.item())  
-        print('test acc:{}'.format(acc))
+        _, acc = eval(model=model, data_loader=val_loader, mode='', print_perform=False, device=device)
+        accuracies.append(acc.item())
+        print('validation acc:{}'.format(acc))
 
         if acc>=best_acc:
             best_acc = acc
 
-        # if (epo+1) % SAVE == 0:
-            print('SAVING')
-            print(f'current acc = {acc}')
-            print(f'best acc = {best_acc}')
-            torch.save(model, f'{path}{epo+1}.pth')
-
-  
+        print('SAVING')
+        print(f'current acc = {acc}')
+        print(f'best acc = {best_acc}')
+        torch.save(model, f'{path}{epo+1}.pth')
 
         if (epo+1) == num_epochs:
             print('SAVING LAST EPOCH')
             torch.save(model, f'{path}{epo+1}_final_model_{acc}.pth')
 
+        if scheduler is not None:
+            scheduler.step()
 
     end = time.time()
     print('training time:', end-start, 's')
-    
+
     csv_path = f'{path}training_metrics.csv'
     with open(csv_path, mode='w', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(['Epoch', 'Loss', 'Accuracy'])
         for epoch, (loss, acc) in enumerate(zip(losses, accuracies), 1):
-            writer.writerow([epoch, loss, acc])    
-            
-    #     # Plotting
-    # fig, ax1 = plt.subplots()
+            writer.writerow([epoch, loss, acc])
 
-    # color = 'tab:red'
-    # ax1.set_xlabel('Epoch')
-    # ax1.set_ylabel('Loss', color=color)
-    # ax1.plot(range(num_epochs), losses, color=color)
-    # ax1.tick_params(axis='y', labelcolor=color)
-
-    # ax2 = ax1.twinx()  
-    # color = 'tab:blue'
-    # ax2.set_ylabel('Accuracy', color=color)  
-    # ax2.plot(range(num_epochs), accuracies, color=color)
-    # ax2.tick_params(axis='y', labelcolor=color)
-
-    # fig.tight_layout()  #
-    # plt.savefig(f'{path}training_metrics.jpg')
-    
     return model, num_classes, end
 
 
-def test(model, loader, idx_to_class, num_classes, device): 
+def test(model, loader, idx_to_class, num_classes, device):
     model.eval()
     correct = [0] * num_classes
     cnt = [0] * num_classes
@@ -215,8 +226,8 @@ def test(model, loader, idx_to_class, num_classes, device):
             target = target.to(device)
 
             output = model(data)
-            pred = output.argmax(dim=1, keepdim=True) 
-            
+            pred = output.argmax(dim=1, keepdim=True)
+
             for i in range(target.size(0)):
                 label = target[i].item()
                 if pred[i].item() == label:
@@ -232,11 +243,11 @@ def test(model, loader, idx_to_class, num_classes, device):
 
 
 def eval(model, data_loader, batch_size=64, mode='backdoor', print_perform=False, device='cpu', name=''):
-    model.eval() 
+    model.eval()
     y_true = []
     y_predict = []
     for step, (batch_x, batch_y) in enumerate(data_loader):
-        
+
         if len(batch_y.shape)>1:
             batch_y=batch_y.squeeze()
 
@@ -257,68 +268,63 @@ def eval(model, data_loader, batch_size=64, mode='backdoor', print_perform=False
 
     num_hits = (y_true == y_predict).float().sum()
     acc = num_hits / y_true.shape[0]
-    
- 
+
+
     return accuracy_score(y_true.cpu(), y_predict.cpu()), acc
 
 
-def train_engine(args, train_remain_loader, test_remain_loader, train_loader, test_loader, \
+def train_engine(args, train_remain_loader, val_remain_loader, train_loader, val_loader, \
                  dataset, num_classes, idx_to_class, device, model_name, output_file_name, csv_columns, distributions, gamma_values,exp_name='deafault'):
-    
+
     if args.train:
         print('=' * 100)
         print(' ' * 25 + 'train original model and retrain model from scratch')
         print('=' * 100)
-        ori_model, num_classes, _ = train_save_model(train_loader, test_loader, args.model_name, args.optim_name, args.lr,
-                                     args.epoch, device, model_name + "_original_model_", dataset=dataset, data_name=args.data_name)
-        
-        # if torch.cuda.device_count() > 1:
-        #     ori_model = torch.nn.DataParallel(ori_model, device_ids =[args.gpu_id, 0,2])
-            
-        print('\noriginal model acc:\n', test(ori_model, test_loader, idx_to_class, num_classes, device))
+        ori_model, num_classes, _ = train_save_model(train_loader, val_loader, args.model_name, args.optim_name, args.lr,
+                                     args.epoch, device, model_name + "_original_model_", dataset=dataset, data_name=args.data_name, forget_class=None)
 
-        retrain_model, _, _ = train_save_model(train_remain_loader, test_remain_loader, args.model_name, args.optim_name,
-                                        args.lr, args.epoch, device, model_name + "_retrain_model_" + 'class_' + str(args.forget_class) + '_', dataset=dataset, data_name=args.data_name)
-        
-        print('\nretrain model acc:\n', test(retrain_model, test_loader, idx_to_class, num_classes, device))    
+        print('\noriginal model acc:\n', test(ori_model, val_loader, idx_to_class, num_classes, device))
+
+        retrain_model, _, _ = train_save_model(train_remain_loader, val_remain_loader, args.model_name, args.optim_name,
+                                        args.lr, args.epoch, device, model_name + "_retrain_model_" + 'class_' + str(args.forget_class) + '_', dataset=dataset, data_name=args.data_name, forget_class=args.forget_class)
+
+        print('\nretrain model acc:\n', test(retrain_model, val_remain_loader, idx_to_class, num_classes, device))
         return ori_model, retrain_model, None
-    
+
     elif args.retrain_only:
-        ori_model = torch.load(args.original_model, map_location=torch.device('cpu'), weights_only=False).to(device)
+        ori_model = load_checkpoint(args.original_model, 'original_model', device=device)
         ori_model.to('cpu')
         print(model_name + "_retrain_" + exp_name + '_' )
-        retrain_model, _, time_retrain = train_save_model(train_remain_loader, test_remain_loader, args.model_name, args.optim_name,
-                                        args.lr, args.epoch, device,  model_name + "_retrain_" + exp_name + '_' , dataset=dataset, data_name=args.data_name)
+        retrain_model, _, time_retrain = train_save_model(train_remain_loader, val_remain_loader, args.model_name, args.optim_name,
+                                        args.lr, args.epoch, device,  model_name + "_retrain_" + exp_name + '_' , dataset=dataset, data_name=args.data_name, forget_class=args.forget_class)
 
-        print('\nretrain model acc:\n', test(retrain_model, test_loader, idx_to_class, num_classes, device))   
+        print('\nretrain model acc:\n', test(retrain_model, val_remain_loader, idx_to_class, num_classes, device))
 
         print(f'RETRAIN TIME {time_retrain}')
 
         return ori_model, retrain_model, None
- 
+
     else:
         print('=' * 100)
         print(' ' * 25 + 'load original model and retrain model')
         print('=' * 100)
 
         # Load and print original model accuracy
-        ori_model = torch.load(args.original_model, map_location=torch.device('cpu'))
-        ori_model.to(device)
+        ori_model = load_checkpoint(args.original_model, 'original_model', device=device)
 
-        _, orig_acc = eval(model=ori_model, data_loader=test_loader, mode='', print_perform=False, device=device)
+        _, orig_acc = eval(model=ori_model, data_loader=val_loader, mode='', print_perform=False, device=device)
 
-        print('test acc:{}'.format(orig_acc))
-        print('\n ORIGINAL model acc:\n', test(ori_model, test_loader, idx_to_class, num_classes, device))
+        print('validation acc:{}'.format(orig_acc))
+        print('\n ORIGINAL model acc:\n', test(ori_model, val_loader, idx_to_class, num_classes, device))
 
         ori_model.to('cpu')
 
 
-        retrain_model = torch.load(args.retrain_model, map_location=torch.device('cpu'))
-        retrain_model.to(device)
-        _, retrain_acc = eval(model=retrain_model, data_loader=test_remain_loader, mode='', print_perform=False, device=device)
-        
-        print('test acc retrain:{}'.format(retrain_acc))
-        print('\nretrain model acc:\n', test(retrain_model, test_loader, idx_to_class, num_classes, device))
+        retrain_model = load_checkpoint(args.retrain_model, 'retrain_model', device=device)
+        _, retrain_acc = eval(model=retrain_model, data_loader=val_remain_loader, mode='', print_perform=False, device=device)
+
+        print('validation acc retrain:{}'.format(retrain_acc))
+        print('\nretrain model acc:\n', test(retrain_model, val_remain_loader, idx_to_class, num_classes, device))
 
         retrain_model.to('cpu')
 
@@ -337,7 +343,7 @@ def train_engine(args, train_remain_loader, test_remain_loader, train_loader, te
                 'Unlearning Time': 'N/A',
                 'Per Class Accuracies SOTA': 'N/A'
             }
-            
+
             # Add entries for each combination of distribution and gamma value
             for dist in distributions:
                 for gamma in gamma_values:
@@ -347,35 +353,7 @@ def train_engine(args, train_remain_loader, test_remain_loader, train_loader, te
                     row_data[forget_acc_col] = 'N/A'
                     row_data[remain_acc_col] = 'N/A'
                     row_data[per_class_acc_col] = 'N/A'
-            
+
             writer.writerow(row_data)
-
-
-
-
-        with open(output_file_name, 'a', newline='') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=csv_columns)
-            row_data = {
-                'Dataset': args.data_name,
-                'Original Acc': orig_acc.detach().item(),
-                'Retrain Acc': retrain_acc,
-
-                'Retrain Acc': retrain_acc.detach().item(),
-                'Unlearning Time': 'N/A',
-            }
-            
-            for dist in distributions:
-                for gamma in gamma_values:
-                    forget_acc_col = f'Forget Acc {dist} {gamma}'
-                    remain_acc_col = f'Remain Acc {dist} {gamma}'
-                    row_data[forget_acc_col] = 'N/A'
-                    row_data[remain_acc_col] = 'N/A'
-                    row_data[per_class_acc_col] = 'N/A'
-            
-            writer.writerow(row_data)
-
-
 
         return ori_model, retrain_model, row_data
-
-
