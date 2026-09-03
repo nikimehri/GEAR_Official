@@ -20,6 +20,13 @@ from ensemble import run_exps
 
 
 def main(args):
+    """Top-level orchestration: build the dataset/dataloaders and train/val/
+    test split, optionally run t-SNE embedding analysis or the ensemble
+    side-experiment, get an original+retrain model pair (training from
+    scratch, retraining only, or loading existing checkpoints), and - if
+    --do_unlearning - run GEAR unlearning once against the test set
+    (--run_sota) and/or once against the validation set (--specific_settings),
+    logging results to CSV after each stage."""
     torch.cuda.empty_cache()
     seed_torch()
 
@@ -137,8 +144,8 @@ def main(args):
         # differences between --run_sota and --specific_settings are which
         # split gets evaluated (test vs. validation) and the output name.
         gear_kwargs = dict(
-            forget_class=args.forget_class, path=path, custom_forget=args.custom_unlearn, to_forget=args.to_forget,
-            data_name=args.data_name, oculoplastics=args.oculoplastics,
+            forget_class=args.forget_class, custom_forget=args.custom_unlearn, to_forget=args.to_forget,
+            oculoplastics=args.oculoplastics,
             retrain_model=retrain_model, train_remain_loader=train_remain_loader,
             remain_reg_param=args.remain_reg, selective_unlearning=SELECTIVE_UNLEARNING,
             poison_epoch=args.poison_epoch,

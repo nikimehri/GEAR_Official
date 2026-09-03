@@ -79,6 +79,10 @@ def compute_embedding_complexity(model, forget_loader, retain_loader, device='cu
 
 
 def get_embeddings_predictions_and_forget_indications(model, forget_loader, remain_loader, device):
+    """Runs model over both loaders, collecting final embeddings, predicted
+    labels, true labels, and a boolean "is this a forget sample" flag for
+    every example. Requires the model to expose get_embedding (present on
+    both AllCNN and CustomResNet). Feeds plot_tsne's t-SNE visualization."""
     model.eval()
     embeddings = []
     predictions = []
@@ -120,6 +124,12 @@ def get_embeddings_predictions_and_forget_indications(model, forget_loader, rema
 
 
 def plot_tsne(embeddings, predictions, is_forget_sample, true_labels, title, ax, add_legend=False):
+    """Projects embeddings to 2D via t-SNE and scatters them: remain samples
+    as circles, forget samples as stars, colored by true class, with a
+    misclassification outline where predictions disagree with true_labels.
+    Note: class_colors below is hardcoded to 3 classes, so this only works
+    for 3-class datasets (fundus/oculoplastics) unless labels are remapped
+    first."""
     tsne = TSNE(n_components=2, random_state=0)
     pts = tsne.fit_transform(embeddings)
 

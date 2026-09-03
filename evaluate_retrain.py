@@ -10,6 +10,10 @@ from utils import set_num_classes
 
 
 def main():
+    """Rebuilds the same train/val/test split main.py would produce for the
+    given seed, loads a retrain checkpoint, and prints its accuracy on the
+    remain portion of the test set - a quick sanity check independent of
+    running the full pipeline."""
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint_path', required=True)
     parser.add_argument('--data_name', default='cifar100')

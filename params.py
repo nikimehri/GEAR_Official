@@ -3,6 +3,10 @@ import os
 
 
 def get_parameters():
+    """Defines and parses every CLI flag main.py understands, then runs
+    post-parse validation (required-argument combinations, dataset/model
+    compatibility, checkpoint paths that must actually exist) before
+    returning the parsed args."""
     parser = argparse.ArgumentParser("GEAR Unlearning (contrastive loss + entanglement-score weighting)")
 
     # which dataset to use
@@ -108,10 +112,13 @@ def get_parameters():
     args = parser.parse_args()
 
     def require_arg(arg_name, condition, reason):
+        """Fails fast with a clear message if arg_name is missing whenever
+        condition holds, instead of a cryptic error deep inside main()."""
         if condition and not getattr(args, arg_name):
             parser.error(f"--{arg_name} is required when {reason}")
 
     def require_existing_path(arg_name):
+        """Fails fast if a path-valued arg was given but points nowhere."""
         path = getattr(args, arg_name)
         if path and not os.path.exists(path):
             parser.error(f"--{arg_name} points to a missing file: {path}")

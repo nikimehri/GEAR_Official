@@ -11,6 +11,8 @@ import csv
 from medmnist import INFO
 
 def seed_torch(seed=2022):
+    """Seeds numpy/torch RNGs and forces deterministic cuDNN kernels, for
+    run-to-run reproducibility."""
     np.random.seed(seed)
     # os.environ['PYTHONHASHSEED'] = str(seed)
     torch.manual_seed(seed)
@@ -39,10 +41,15 @@ def set_up_save(args, name):
 
 
 def create_dir(dir_name):
+    """Makes dir_name if it doesn't already exist (idempotent)."""
     if not os.path.exists(dir_name):
         os.makedirs(dir_name)
 
 def map_metadata(dataset, df):
+    """Builds {image filename: one-hot metadata vector} for every image in
+    an ImageFolder-based Subset, by matching against a clinical metadata
+    dataframe's filename column. Used for the --custom_unlearn (attribute-
+    based, not class-based) forgetting mode."""
     metadata_dict = {}
     print('in map metadata')
     print(len(dataset.dataset.imgs))
@@ -56,6 +63,10 @@ def map_metadata(dataset, df):
     return metadata_dict
 
 def create_ohe_vector(row):
+    """Builds an 8-element one-hot vector from a metadata row: eye side
+    (OS/OD), imaging device (Spectralis/Cirrus 800 FA), and exam year
+    (2015-2018). Used as the per-sample "attribute" label for metadata-based
+    (not class-based) forgetting."""
     attributes = ['OS', 'OD', 'Spectralis (Scans)', 'Cirrus 800 FA', '2015', '2016', '2017', '2018']
 
     ohe_vector = [0] * len(attributes)
@@ -87,6 +98,11 @@ def create_ohe_vector(row):
     return ohe_vector
 
 def set_num_classes(args, dataset):
+    """Returns (num_classes, idx_to_class) for the chosen dataset. Class
+    counts for the clinical datasets are hardcoded (they're not derivable
+    from a generic ImageFolder); svhn/medmnist need special-cased label
+    naming, everything else derives idx_to_class from the dataset's own
+    class_to_idx mapping."""
     if args.data_name == 'oct_4_class':
         num_classes = 4
     elif args.data_name == 'fundus_3_class':

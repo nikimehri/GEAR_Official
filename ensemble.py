@@ -4,6 +4,11 @@ from tqdm import tqdm
 import time
 
 def run_exps(args, valset, testset, train_remain_loader, finetune=False, frozen=False):
+    """Experimental (not part of the paper's reported results) "ensemble"
+    approach: grafts the classifier head from a forget-optimized checkpoint
+    (--good_forget) onto the backbone of a remain-optimized checkpoint
+    (--good_remain), optionally fine-tunes the result on the remain set, and
+    reports val/test forget+remain accuracy for the spliced model."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     good_r = torch.load(args.good_remain, map_location=device)
@@ -66,6 +71,7 @@ def run_exps(args, valset, testset, train_remain_loader, finetune=False, frozen=
 
 
 def evaluate(model, dataloader,device):
+    """Plain top-1 accuracy over a full loader pass."""
     model.eval()
     correct = 0
     total = 0

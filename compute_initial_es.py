@@ -23,6 +23,11 @@ from gear import (
 
 
 def main():
+    """For each --seeds value: rebuilds the train/val split with that seed,
+    computes retain-class centroids from the (untouched) checkpoint, then
+    computes every forget sample's entanglement score against those
+    centroids. Prints a per-seed summary table and writes the full
+    per-sample results to initial_es_{data_name}.json."""
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint_path', required=True,
                         help='Pretrained original model checkpoint.')

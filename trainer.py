@@ -81,6 +81,9 @@ def optimizer_picker(optimization, param, lr, momentum=0.):
     return optimizer
 
 def train(model, data_loader, criterion, optimizer, loss_mode, device='cpu'):
+    """Runs one epoch of standard supervised training. loss_mode='neg_grad'
+    negates the loss before backprop (a crude gradient-ascent option), but
+    no current CLI flag selects it - only 'cross'/'mse' are ever used."""
     running_loss = 0
     model.train()
     print(len(data_loader))
@@ -214,6 +217,8 @@ def train_save_model(train_loader, val_loader, model_name, optim_name, learning_
 
 
 def test(model, loader, idx_to_class, num_classes, device):
+    """Computes per-class accuracy over a full loader pass, returned as
+    {class_name: accuracy}."""
     model.eval()
     correct = [0] * num_classes
     cnt = [0] * num_classes
@@ -243,6 +248,10 @@ def test(model, loader, idx_to_class, num_classes, device):
 
 
 def eval(model, data_loader, batch_size=64, mode='backdoor', print_perform=False, device='cpu', name=''):
+    """Computes overall accuracy over a full loader pass. Returns
+    (sklearn accuracy_score, tensor accuracy) - most callers only use the
+    second value. mode/print_perform/name/batch_size are accepted for
+    call-site compatibility but not used by this implementation."""
     model.eval()
     y_true = []
     y_predict = []
@@ -275,6 +284,11 @@ def eval(model, data_loader, batch_size=64, mode='backdoor', print_perform=False
 
 def train_engine(args, train_remain_loader, val_remain_loader, train_loader, val_loader, \
                  dataset, num_classes, idx_to_class, device, model_name, output_file_name, csv_columns, exp_name='deafault'):
+    """Three-way dispatcher called from main.py: --train trains both an
+    original and a retrain (remain-only) model from scratch; --retrain_only
+    loads an existing original checkpoint and trains just the retrain model;
+    otherwise (the usual path for an actual unlearning run) both checkpoints
+    are loaded from disk and logged to CSV."""
 
     if args.train:
         print('=' * 100)

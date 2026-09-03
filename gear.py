@@ -57,6 +57,7 @@ def get_intermediate_features_multilayer(model, x, layers):
 
 
 def normalize_rows(x, eps=1e-8):
+    """L2-normalizes each row of a [N, D] tensor, epsilon-stabilized."""
     return x / (x.norm(dim=1, keepdim=True) + eps)
 
 
@@ -424,9 +425,9 @@ def _log_results_to_csv(csv_path: str, row: dict) -> None:
 # =============================================================================
 
 def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
-         poison_epoch=10, forget_class=0, path='./',
+         poison_epoch=10, forget_class=0,
          to_forget=None, custom_forget=False, test_metadata=None, train_metadata=None, output_name=None,
-         data_name=None, oculoplastics=False,
+         oculoplastics=False,
          retrain_model=None, train_remain_loader=None, remain_reg_param=1.0,
          selective_unlearning=False,
          # --------------------------------------------------------------
@@ -701,6 +702,11 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
     elif custom_forget and oculoplastics:
         test_forget_loader, test_remain_loader = get_custom_forget_loader_oculoplastics(dv, test_metadata)
         _, train_remain_loader = get_custom_forget_loader_oculoplastics(dt, train_metadata)
+    else:
+        # Unreachable: custom_forget/oculoplastics are booleans and the three
+        # branches above already cover every combination. Kept explicit so
+        # test_forget_loader/test_remain_loader are never used unassigned.
+        raise ValueError("Unhandled custom_forget/oculoplastics combination")
 
     mode = ''
 

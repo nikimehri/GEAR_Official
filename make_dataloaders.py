@@ -9,6 +9,9 @@ from medmnist import INFO
 import medmnist
 
 def resize_width_pad_height(target_width=512, target_height=512):
+    """Returns a transform that resizes an image to target_width preserving
+    aspect ratio, then pads vertically to reach target_height - used for the
+    oculoplastics dataset, whose images have inconsistent aspect ratios."""
     def transform(image):
         aspect_ratio = image.width / image.height
         new_height = int(round(target_width / aspect_ratio))
@@ -27,6 +30,12 @@ def resize_width_pad_height(target_width=512, target_height=512):
     return transform
 
 def get_dataset(data_name, path='./data'):
+    """Builds (trainset, testset, dataset) for the requested dataset name,
+    with per-dataset normalization/augmentation. 'dataset' is an untransformed
+    (or minimally transformed) reference copy used for class-count/label
+    lookups elsewhere. Clinical/generic-ImageFolder datasets get an 80/20
+    train/test split via shuffled indices (the else branch also covers any
+    ImageFolder-compatible directory not explicitly named above)."""
     if data_name == 'mnist':
         transform = transforms.Compose([
             transforms.ToTensor(),
@@ -216,13 +225,17 @@ def get_dataset(data_name, path='./data'):
         return trainset, testset, dataset
 
 def get_dataloader(trainset, testset, batch_size):
-
+    """Plain shuffled DataLoader pair for a train/test dataset pair."""
     train_loader = DataLoader(dataset=trainset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(dataset=testset, batch_size=batch_size, shuffle=True)
     return train_loader, test_loader
 
 
 def split_class_data(dataset, forget_class, num_forget):
+    """Splits a dataset's indices into: forget_index (the first num_forget
+    samples of forget_class), class_remain_index (any leftover samples of
+    that same class, used as a small "repair" set), and remain_index
+    (everything else, plus those leftovers)."""
     forget_index = []
     class_remain_index = []
     remain_index = []
@@ -246,6 +259,9 @@ def split_class_data(dataset, forget_class, num_forget):
 
 
 def split_metadata_data(subset, metadata_dict, unlearn_attribute, num_forget):
+    """Same idea as split_class_data, but the forget/remain split is driven
+    by whether a sample's one-hot metadata vector has unlearn_attribute set,
+    rather than by class label."""
     attributes = ['OS', 'OD', 'Spectralis (Scans)', 'Cirrus 800 FA', '2015', '2016', '2017', '2018']
     attr_index = attributes.index(unlearn_attribute)
 
@@ -274,6 +290,9 @@ def split_metadata_data(subset, metadata_dict, unlearn_attribute, num_forget):
 
 
 def get_custom_unlearn_loader(trainset, testset, train_dict, test_dict, unlearn_attribute, batch_size):
+    """Metadata-attribute-based analogue of get_unlearn_loader: builds
+    forget/remain/repair loaders for both trainset and testset, split by
+    whether unlearn_attribute is set rather than by class label."""
     num_forget = 1000
     repair_num_ratio = 0.01
 
@@ -306,7 +325,12 @@ def get_custom_unlearn_loader(trainset, testset, train_dict, test_dict, unlearn_
 
 
 def get_unlearn_loader(trainset, testset, forget_class, batch_size, num_forget, repair_num_ratio=0.01, selective_unlearning = False):
-
+    """The standard class-based forget/remain loader builder. When
+    selective_unlearning is True, the test-side forget/remain indices are
+    forced equal to the train-side ones - appropriate when testset is
+    actually the same data as trainset (evaluating a partial-forget
+    experiment against the exact samples that were forgotten, not a
+    separate held-out class-labeled test set)."""
     train_forget_index, train_remain_index, class_remain_index = split_class_data(trainset, forget_class,
                                                                                   num_forget=num_forget)
 
@@ -345,6 +369,8 @@ def get_unlearn_loader(trainset, testset, forget_class, batch_size, num_forget, 
 
 
 def get_forget_loader(dt, forget_class):
+    """Simple post-hoc split of any dataset into forget/remain loaders by
+    class label, for evaluation (not training-loader construction)."""
     idx = []
     els_idx = []
     for i in range(len(dt)):
@@ -361,6 +387,9 @@ def get_forget_loader(dt, forget_class):
 
 
 def get_custom_forget_loader(dataset, metadata_dict, attribute_to_forget, batch_size=8):
+    """Evaluation-time forget/remain split by metadata attribute (post-hoc
+    version of split_metadata_data, for use after training-loader
+    construction, e.g. in gear.py's evaluation block)."""
     forget_indices = []
     remain_indices = []
 
@@ -396,6 +425,9 @@ def get_custom_forget_loader(dataset, metadata_dict, attribute_to_forget, batch_
 
 
 def get_custom_forget_loader_oculoplastics(dataset, metadata_dict, batch_size=8):
+    """Oculoplastics analogue of get_custom_forget_loader: any sample present
+    in metadata_dict (already thresholded by map_metadata_oculoplastics) is
+    forget, everything else is remain."""
     forget_indices = []
     remain_indices = []
 
@@ -515,6 +547,9 @@ def dataloader_engine(args, trainset, valset, testset, combined_df=None, num_for
 
 
 def map_metadata_oculoplastics(dataset, df, feature='vert_pf', threshold=11):
+    """Builds {filename: avg_feature_value} for images whose left/right
+    averaged clinical measurement (default: vertical palpebral fissure)
+    exceeds threshold - defines the oculoplastics forget set."""
     metadata_dict = {}
     for img_path, _ in dataset.dataset.imgs:
         filename = os.path.basename(img_path)
@@ -531,6 +566,9 @@ def map_metadata_oculoplastics(dataset, df, feature='vert_pf', threshold=11):
 
 
 def split_metadata_data_oculoplastics(subset, metadata_dict, num_forget):
+    """Oculoplastics analogue of split_metadata_data: presence in
+    metadata_dict (rather than a specific one-hot bit) marks a sample as
+    forget, up to num_forget samples."""
     forget_index = []
     remain_index = []
     sum = 0
@@ -553,6 +591,7 @@ def split_metadata_data_oculoplastics(subset, metadata_dict, num_forget):
     return forget_index, remain_index
 
 def get_custom_unlearn_loader_oculoplastics(trainset, testset, train_dict, test_dict, batch_size, num_forget=1000, repair_num_ratio=0.01):
+    """Oculoplastics analogue of get_custom_unlearn_loader."""
     train_forget_index, train_remain_index = split_metadata_data_oculoplastics(trainset, train_dict, num_forget)
     test_forget_index, test_remain_index = split_metadata_data_oculoplastics(testset, test_dict, num_forget=len(testset.dataset.imgs))
 
