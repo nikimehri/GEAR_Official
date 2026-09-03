@@ -21,6 +21,10 @@ matplotlib==3.10.8
 medmnist==3.0.2
 mpmath==1.3.0
 networkx==3.6.1
+# Only needed to regenerate TINYIMAGENET_SUPERCLASS_MAPPING in
+# class_hierarchy.py via scripts/build_tinyimagenet_hierarchy.py - not
+# required to train, unlearn, or evaluate.
+nltk==3.10.3
 numpy==2.4.2
 packaging==26.0
 pandas==3.0.0
