@@ -154,12 +154,13 @@ def main(args):
             centroid_refresh_interval=args.centroid_refresh_interval,
             num_classes=num_classes,
             cl_warmup_steps=args.cl_warmup_steps,
+            data_name=args.data_name,
         )
 
         if args.run_sota:
             print('RUNNING GEAR UNLEARNING (evaluated against the test set)')
             save_me = args.name + '_SOTA'
-            unlearn_model_sota, forget_acc_sota, remain_acc_sota, unlearning_time, _, _ = gear.gear(
+            unlearn_model_sota, forget_acc_sota, remain_acc_sota, unlearning_time, _, _, _, _ = gear.gear(
                 ori_model, train_forget_loader, trainset, testset, test_loader, device,
                 test_metadata=test_dict, train_metadata=train_dict, output_name=save_me,
                 **gear_kwargs
@@ -188,7 +189,7 @@ def main(args):
         if args.specific_settings:
             save_me = args.name
 
-            unlearn_model, forget_acc, remain_acc, gear_time, test_acc, mia_score = gear.gear(
+            unlearn_model, forget_acc, remain_acc, gear_time, test_acc, mia_score, retain_adjacent_acc, retain_remote_acc = gear.gear(
                 ori_model, train_forget_loader, trainset, valset, val_loader, device,
                 test_metadata=val_dict, train_metadata=train_dict, output_name=save_me,
                 **gear_kwargs
@@ -198,11 +199,11 @@ def main(args):
             print(f'GEAR UNLEARNING TIME forgetting {num_forget} SAMPLES: {gear_time}')
 
             # Fixed columns for the GEAR-specific run. Retain Remote/Adjacent
-            # Acc are placeholders - not yet computed anywhere in the
-            # pipeline, pending a metric definition to follow.
+            # Acc are 'N/A' for any dataset without a known class hierarchy
+            # (see class_hierarchy.py) - currently only cifar100/tinyimagenet.
             row_data['Forget Acc'] = forget_acc.detach().item()
-            row_data['Retain Remote Acc'] = 'N/A'
-            row_data['Retain Adjacent Acc'] = 'N/A'
+            row_data['Retain Remote Acc'] = retain_remote_acc
+            row_data['Retain Adjacent Acc'] = retain_adjacent_acc
             row_data['Test Acc'] = test_acc.detach().item() if isinstance(test_acc, torch.Tensor) else test_acc
             row_data['MIA'] = mia_score
             row_data['Unlearning Time'] = gear_time

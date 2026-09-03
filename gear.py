@@ -6,6 +6,7 @@ from torch import nn
 import tqdm
 import time
 from make_dataloaders import *
+import class_hierarchy
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import csv
@@ -447,6 +448,7 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
          centroid_refresh_interval=None,
          num_classes=None,
          cl_warmup_steps=0,
+         data_name=None,
          ):
     """Trains an unlearn_model away from ori_model's weights by minimizing a
     retain cross-entropy loss plus a feature-space contrastive/entanglement
@@ -457,6 +459,11 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
     above), with the repulsion strength scaled per-sample by how "entangled"
     each forget sample currently is with the retain distribution when
     use_entanglement_weighting is enabled.
+
+    data_name is only used to compute Retain Adjacent/Remote Accuracy (see
+    class_hierarchy.py) - it's optional and has no effect on the unlearning
+    algorithm itself; when omitted (or when the dataset has no known class
+    hierarchy), those two metrics are reported as 'N/A'.
     """
 
     start = time.time()
@@ -716,6 +723,14 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
     _, remain_acc = eval(model=unlearn_model, data_loader=test_remain_loader, mode=mode,
                          print_perform=False, device=device, name='test set remain class')
 
+    # --- Retain Adjacent/Remote Accuracy (class-taxonomy-based - see
+    # class_hierarchy.py; 'N/A' for any data_name without a known hierarchy,
+    # including every custom_forget/oculoplastics clinical dataset) ---------
+    adjacent_indices, remote_indices = class_hierarchy.get_adjacent_remote_split(
+        data_name, forget_class, dv)
+    retain_adjacent_acc, retain_remote_acc = class_hierarchy.compute_split_accuracy(
+        unlearn_model, dv, adjacent_indices, remote_indices, device)
+
     retain_cos_sim = retain_intermediate_cosine_similarity(
         ref_model, unlearn_model, test_remain_loader, device, target_layer)
     retain_l1_diff = retain_intermediate_feature_l1_diff(
@@ -797,6 +812,8 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
             "test_acc": test_acc.item() if isinstance(test_acc, torch.Tensor) else test_acc,
             "forget_acc": forget_acc.item() if isinstance(forget_acc, torch.Tensor) else forget_acc,
             "remain_acc": remain_acc.item() if isinstance(remain_acc, torch.Tensor) else remain_acc,
+            "retain_adjacent_acc": retain_adjacent_acc,
+            "retain_remote_acc": retain_remote_acc,
             "cos_sim": retain_cos_sim,
             "l1_drift": retain_l1_diff,
             "mia_mean": mia_mean,
@@ -812,4 +829,4 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
     print('Time Consuming:', end - start, 'secs')
 
     unlearn_model.to(device)
-    return unlearn_model, forget_acc, remain_acc, gear_time, test_acc, mia_mean
+    return unlearn_model, forget_acc, remain_acc, gear_time, test_acc, mia_mean, retain_adjacent_acc, retain_remote_acc
