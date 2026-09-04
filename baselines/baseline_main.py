@@ -8,6 +8,7 @@ from finetune import finetune
 from delete import delete_unlearn
 from ssd import ssd_unlearn
 from coun import get_coun_datasets, coun_unlearn
+from cu import cu_unlearn
 from baseline_utils import *
 from models import *
 import class_hierarchy
@@ -230,6 +231,23 @@ if __name__ == '__main__':
                         help='CoUn\'s contrastive-loss temperature (see baselines/coun.py). '
                              'Fixed here, not swept - use the standalone coun.py CLI for the sweep.')
 
+    # --- CU (Contrastive Unlearning, Lee et al. 2024) arguments ---
+    # Not to be confused with CoUn above (a different paper). The paper
+    # doesn't state numeric defaults for these - see baselines/cu.py.
+    parser.add_argument('--cu_epochs', type=int, default=10,
+                        help='Max epochs for the CU baseline (early-stops once forget-set '
+                             'accuracy drops to 1/num_classes, per the paper\'s own Algorithm 1).')
+    parser.add_argument('--cu_lr', type=float, default=0.01,
+                        help='SGD learning rate for the CU baseline.')
+    parser.add_argument('--cu_temp', type=float, default=0.1,
+                        help='CU\'s contrastive-loss temperature (tau).')
+    parser.add_argument('--cu_lambda_ul', type=float, default=1.0,
+                        help='CU\'s contrastive unlearning loss weight (lambda_UL).')
+    parser.add_argument('--cu_lambda_ce', type=float, default=1.0,
+                        help='CU\'s retain-set cross-entropy loss weight (lambda_CE).')
+    parser.add_argument('--cu_omega', type=int, default=4,
+                        help='CU\'s inner-loop repetitions per forget batch (paper: <= 4).')
+
     args, _ = parser.parse_known_args()
 
     BASELINE_DIR = f'{MODEL_CHECKPOINT_ROOT}/baseline_models'
@@ -366,6 +384,15 @@ if __name__ == '__main__':
                     epochs=args.coun_epochs, lr=args.coun_lr,
                 )
                 readouts[unlearn_type][data_name] = all_readouts(model_coun, test_loader, final_forget_loader, final_remain_loader, name='CoUn', seed=seed)
+            elif unlearn_type == 'cu':
+                print("Forgetting by CU:")
+                model_cu = cu_unlearn(
+                    model, train_forget_loader, train_remain_loader, device, num_classes,
+                    lambda_ul=args.cu_lambda_ul, lambda_ce=args.cu_lambda_ce, temperature=args.cu_temp,
+                    omega=args.cu_omega, lr=args.cu_lr, max_epochs=args.cu_epochs,
+                    eval_forget_loader=final_forget_loader,
+                )
+                readouts[unlearn_type][data_name] = all_readouts(model_cu, test_loader, final_forget_loader, final_remain_loader, name='CU', seed=seed)
             else:
                 print(f"Method '{unlearn_type}' not supported in single-experiment mode.")
 
@@ -381,7 +408,7 @@ if __name__ == '__main__':
     forget_bs = 16
     batch_size = 8
 
-    methods = ['finetune', 'neggrad', 'cfk', 'euk', 'scrub', 'delete', 'ssd', 'coun', 'ravi', 'chen','eval_orig']
+    methods = ['finetune', 'neggrad', 'cfk', 'euk', 'scrub', 'delete', 'ssd', 'coun', 'cu', 'ravi', 'chen','eval_orig']
 
     SELECTIVE_UNLEARNING = False
     oculoplastics =  False
@@ -594,6 +621,19 @@ if __name__ == '__main__':
                         readouts[unlearn_type][data_name] = all_readouts(model_coun, test_loader, final_forget_loader, final_remain_loader, name='CoUn', seed=seed)
                     else:
                         readouts[unlearn_type][data_name][str(percentage)] = all_readouts(model_coun, test_loader, final_forget_loader, final_remain_loader, name='CoUn', seed=seed)
+
+                elif unlearn_type == 'cu':
+                    print("Forgetting by CU:")
+                    model_cu = cu_unlearn(
+                        model, train_forget_loader, train_remain_loader, device, num_classes,
+                        lambda_ul=args.cu_lambda_ul, lambda_ce=args.cu_lambda_ce, temperature=args.cu_temp,
+                        omega=args.cu_omega, lr=args.cu_lr, max_epochs=args.cu_epochs,
+                        eval_forget_loader=final_forget_loader,
+                    )
+                    if not SELECTIVE_UNLEARNING:
+                        readouts[unlearn_type][data_name] = all_readouts(model_cu, test_loader, final_forget_loader, final_remain_loader, name='CU', seed=seed)
+                    else:
+                        readouts[unlearn_type][data_name][str(percentage)] = all_readouts(model_cu, test_loader, final_forget_loader, final_remain_loader, name='CU', seed=seed)
 
                 elif unlearn_type == 'scrub':
                     print("Forgetting by SCRUB:")
