@@ -109,6 +109,23 @@ def get_parameters():
     parser.add_argument('--poison_epoch', type=int, default=10,
                         help='number of epochs for the unlearning poison phase')
 
+    # --- AIN (Anamnesis Index) arguments ---------------------------------
+    # Opt-in: computing AIN means fine-tuning a copy of the model (relearn
+    # time), which is meaningfully more expensive than the other metrics.
+    parser.add_argument('--compute_ain', action='store_true',
+                        help='Compute the Anamnesis Index (AIN) metric. Off by default - '
+                             'unlike the other metrics, this involves actually retraining '
+                             'a copy of the model, not just an extra evaluation pass.')
+    parser.add_argument('--ain_error_range', type=float, default=0.05,
+                        help='AIN relearning target: fraction below the original model\'s '
+                             'forget-set accuracy considered "recovered" (paper default: 0.05).')
+    parser.add_argument('--ain_lr', type=float, default=0.1,
+                        help='Learning rate for AIN\'s relearning-phase SGD optimizer.')
+    parser.add_argument('--ain_max_epochs', type=int, default=10,
+                        help='Max epochs of relearning before AIN reports non-convergence (inf).')
+    parser.add_argument('--ain_eval_interval', type=int, default=50,
+                        help='Mini-batch steps between AIN relearning-accuracy checks.')
+
     args = parser.parse_args()
 
     def require_arg(arg_name, condition, reason):
