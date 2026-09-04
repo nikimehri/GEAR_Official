@@ -31,14 +31,15 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import balanced_accuracy_score, roc_auc_score, accuracy_score
 
-# class_hierarchy.py lives at the repo root, one directory up from
-# baselines/ - add it to sys.path the same way baseline_utils.py does, so
-# this resolves regardless of the caller's working directory. Everything
-# else in this file is deliberately self-contained; this is the one shared
-# module it imports, since Retain Adjacent/Remote Accuracy should have one
-# implementation, not a duplicated copy.
+# class_hierarchy.py/ain_metric.py live at the repo root, one directory up
+# from baselines/ - add it to sys.path the same way baseline_utils.py does,
+# so this resolves regardless of the caller's working directory. Everything
+# else in this file is deliberately self-contained; these are the two shared
+# modules it imports, since Retain Adjacent/Remote Accuracy and AIN should
+# each have one implementation, not a duplicated copy.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import class_hierarchy
+import ain_metric
 
 # =============================================================================
 # CoUn code from paper by Khalil et al., 2025
@@ -352,7 +353,8 @@ class DeviceLoader:
 # =============================================================================
 
 def run_seed(seed, forget_class, data_root, checkpoint_path, num_epochs, batch_size, device,
-             lambda_scale=1.0, temp=0.1):
+             lambda_scale=1.0, temp=0.1, retrain_checkpoint=None,
+             ain_error_range=0.05, ain_lr=0.1, ain_max_epochs=10, ain_eval_interval=50):
     print(f"\n{'='*60}")
     print(f"  Seed {seed}")
     print(f"{'='*60}")
@@ -389,6 +391,10 @@ def run_seed(seed, forget_class, data_root, checkpoint_path, num_epochs, batch_s
     if isinstance(model, nn.DataParallel):
         model = model.module
     model = copy.deepcopy(model)
+    # AIN needs the pristine pre-unlearning model as a separate reference -
+    # keep a deep copy before COUN training mutates `model` in place below.
+    original_model = copy.deepcopy(model).to(device)
+    original_model.eval()
     model.to(device)
     model.train()
 
@@ -425,6 +431,22 @@ def run_seed(seed, forget_class, data_root, checkpoint_path, num_epochs, batch_s
     retain_adjacent_acc, retain_remote_acc = class_hierarchy.compute_split_accuracy(
         model, testset, adjacent_indices, remote_indices, device)
 
+    # AIN (Anamnesis Index) - opt-in via --retrain_checkpoint; 'N/A' when not
+    # provided, rather than erroring.
+    ain_score = 'N/A'
+    if retrain_checkpoint is not None:
+        retrain_model = torch.load(retrain_checkpoint, map_location='cpu', weights_only=False)
+        if isinstance(retrain_model, nn.DataParallel):
+            retrain_model = retrain_model.module
+        retrain_model = copy.deepcopy(retrain_model).to(device)
+        retrain_model.eval()
+        cache_key = f"cifar100_{forget_class}_{seed}"
+        ain_score = ain_metric.compute_ain(
+            model, retrain_model, original_model, train_forget_loader, test_forget_loader, device,
+            error_range=ain_error_range, lr=ain_lr, max_epochs=ain_max_epochs, eval_interval=ain_eval_interval,
+            cache_key=cache_key, cache_path='ain_gold_cache.json',
+        )
+
     fa = forget_acc.item() if isinstance(forget_acc, torch.Tensor) else float(forget_acc)
     ra = remain_acc.item() if isinstance(remain_acc, torch.Tensor) else float(remain_acc)
 
@@ -438,6 +460,7 @@ def run_seed(seed, forget_class, data_root, checkpoint_path, num_epochs, batch_s
         'remain_acc': ra,
         'retain_adjacent_acc': retain_adjacent_acc,
         'retain_remote_acc': retain_remote_acc,
+        'ain_score': ain_score,
         'mia_mean': mia_mean,
         'mia_std': mia_std,
         'lt_mia_auc': lt_mia['mia_auc'],
@@ -472,6 +495,18 @@ def parse_args():
                    help='lambda_scale for coun() when --skip_sweep is set (default: 1.0)')
     p.add_argument('--temp', type=float, default=0.1,
                    help='temp for coun() when --skip_sweep is set (default: 0.1)')
+    p.add_argument('--retrain_checkpoint', type=str, default=None,
+                   help='Path to the retrain (gold-standard) model checkpoint. Optional - when '
+                        'given, AIN (Anamnesis Index) is computed for each seed; when omitted, '
+                        'AIN is reported as N/A rather than erroring.')
+    p.add_argument('--ain_error_range', type=float, default=0.05,
+                   help='AIN relearning target margin (default: 0.05).')
+    p.add_argument('--ain_lr', type=float, default=0.1,
+                   help='Learning rate for AIN\'s relearning-phase SGD optimizer.')
+    p.add_argument('--ain_max_epochs', type=int, default=10,
+                   help='Max epochs of relearning before AIN reports non-convergence (inf).')
+    p.add_argument('--ain_eval_interval', type=int, default=50,
+                   help='Mini-batch steps between AIN relearning-accuracy checks.')
     return p.parse_args()
 
 
@@ -596,6 +631,11 @@ def main():
             device=device,
             lambda_scale=best_lambda,
             temp=best_temp,
+            retrain_checkpoint=args.retrain_checkpoint,
+            ain_error_range=args.ain_error_range,
+            ain_lr=args.ain_lr,
+            ain_max_epochs=args.ain_max_epochs,
+            ain_eval_interval=args.ain_eval_interval,
         )
         all_results.append(result)
 
@@ -626,6 +666,7 @@ def main():
             'forget_class': args.forget_class,
             'data_root': args.data_root,
             'checkpoint': args.checkpoint,
+            'retrain_checkpoint': args.retrain_checkpoint,
             'num_epochs': args.num_epochs,
             'batch_size': args.batch_size,
             'seeds': seeds,

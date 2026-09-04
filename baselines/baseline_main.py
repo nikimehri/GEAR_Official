@@ -8,6 +8,7 @@ from finetune import finetune
 from baseline_utils import *
 from models import *
 import class_hierarchy
+import ain_metric
 
 from path_dicts import model_paths, selective_forget_models,chen_paths,ravi_paths,med_unlearn_paths, MODEL_CHECKPOINT_ROOT
 from tqdm import tqdm
@@ -43,14 +44,34 @@ def test(model, loader, idx_to_class, num_classes, device):
 
 
 
+_ain_model_cache = {}
+
+
+def _load_ain_reference_model(path, model_type, num_classes, data_name, device):
+    """Loads a checkpoint for AIN's original_model/retrain_model references,
+    memoized by path so the same checkpoint isn't reloaded on every single
+    all_readouts() call within one experiment (there are up to ~8 per
+    experiment: finetune/neggrad/cfk/euk/scrub x2/chen/ravi/retrain).
+    Returns None if path is falsy."""
+    if not path:
+        return None
+    if path not in _ain_model_cache:
+        ref_model = load_model(model_type, num_classes=num_classes, data_name=data_name).to(device)
+        ref_model = load_model_state(ref_model, path)
+        ref_model.eval()
+        _ain_model_cache[path] = ref_model
+    return _ain_model_cache[path]
+
+
 def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, seed=2022, name='method'):
     """Standard "report card" for any unlearned model: overall test/forget/
-    remain accuracy, per-class accuracy, Retain Adjacent/Remote Accuracy, and
-    a membership-inference-attack score. Called once per baseline method
-    after it's finished running. Like the rest of this module, relies on
-    device/num_classes/idx_to_class/data_name/dataset already being set as
-    module-level globals by the caller (single-experiment or sweep-mode
-    block) before this is invoked."""
+    remain accuracy, per-class accuracy, Retain Adjacent/Remote Accuracy, AIN
+    (opt-in via --compute_ain), and a membership-inference-attack score.
+    Called once per baseline method after it's finished running. Like the
+    rest of this module, relies on device/num_classes/idx_to_class/
+    data_name/dataset/forget_class/args/train_forget_loader/orig_model_path/
+    retrain_model_path already being set as module-level globals by the
+    caller (single-experiment or sweep-mode block) before this is invoked."""
     _, test_acc = eval(model=model, data_loader=test_loader, device=device, name='test set all class')
     _, forget_acc = eval(model=model, data_loader=final_forget_loader, device=device, name='test set forget class')
     _, remain_acc = eval(model=model, data_loader=final_remain_loader, device=device, name='test set remain class')
@@ -65,6 +86,23 @@ def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, s
     retain_adjacent_acc, retain_remote_acc = class_hierarchy.compute_split_accuracy(
         model, dataset, adjacent_indices, remote_indices, device)
 
+    # AIN (Anamnesis Index) - opt-in and requires both the original and
+    # retrain checkpoints (retrain is the gold-standard denominator of the
+    # AIN ratio); 'N/A' otherwise, same convention as the metric above.
+    ain_score = 'N/A'
+    if args.compute_ain:
+        original_model = _load_ain_reference_model(orig_model_path, model_type, num_classes, data_name, device)
+        retrain_model_for_ain = _load_ain_reference_model(retrain_model_path, model_type, num_classes, data_name, device)
+        if original_model is not None and retrain_model_for_ain is not None:
+            cache_key = f"{data_name}_{forget_class}_{seed}"
+            ain_score = ain_metric.compute_ain(
+                model, retrain_model_for_ain, original_model, train_forget_loader, final_forget_loader, device,
+                error_range=args.ain_error_range, lr=args.ain_lr, max_epochs=args.ain_max_epochs,
+                eval_interval=args.ain_eval_interval, cache_key=cache_key, cache_path='ain_gold_cache.json',
+            )
+        else:
+            print(f"[AIN] Missing orig_model_path/retrain_model_path for '{name}' - reporting N/A.")
+
     MIA = membership_inference_attack(model, test_loader, final_forget_loader, device, seed=seed, name=name)
 
     print(f"{name} -> Full test Acc: {test_acc:.5f} Forget Acc: {forget_acc:.5f} Remain Acc: {remain_acc:.5f} MIA: {np.mean(MIA):.2f}±{np.std(MIA):0.2f}")
@@ -75,6 +113,7 @@ def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, s
         retain_error=float(remain_acc),
         retain_adjacent_acc=retain_adjacent_acc,
         retain_remote_acc=retain_remote_acc,
+        AIN=ain_score,
         MIA_mean=float(np.mean(MIA)),
         MIA_std=float(np.std(MIA)),
         per_class=per_class_accs
@@ -143,6 +182,22 @@ if __name__ == '__main__':
                              '"all" for multi-layer ResNet')
     parser.add_argument('--scrub_epochs', type=int, default=5,
                         help='Number of SCRUB training epochs (sgda_epochs). Default: 5.')
+
+    # --- AIN (Anamnesis Index) arguments - mirrors params.py's flags ---
+    parser.add_argument('--compute_ain', action='store_true',
+                        help='Compute the Anamnesis Index (AIN) metric for every baseline. Off by '
+                             'default - unlike the other metrics, this involves actually retraining '
+                             'a copy of the model, not just an extra evaluation pass.')
+    parser.add_argument('--ain_error_range', type=float, default=0.05,
+                        help='AIN relearning target: fraction below the original model\'s '
+                             'forget-set accuracy considered "recovered" (paper default: 0.05).')
+    parser.add_argument('--ain_lr', type=float, default=0.1,
+                        help='Learning rate for AIN\'s relearning-phase SGD optimizer.')
+    parser.add_argument('--ain_max_epochs', type=int, default=10,
+                        help='Max epochs of relearning before AIN reports non-convergence (inf).')
+    parser.add_argument('--ain_eval_interval', type=int, default=50,
+                        help='Mini-batch steps between AIN relearning-accuracy checks.')
+
     args, _ = parser.parse_known_args()
 
     BASELINE_DIR = f'{MODEL_CHECKPOINT_ROOT}/baseline_models'
