@@ -5,6 +5,9 @@ from scrub import scrub_unlearn
 from euk import cfk_unlearn,euk_unlearn
 from neggrad import *
 from finetune import finetune
+from delete import delete_unlearn
+from ssd import ssd_unlearn
+from coun import get_coun_datasets, coun_unlearn
 from baseline_utils import *
 from models import *
 import class_hierarchy
@@ -198,6 +201,35 @@ if __name__ == '__main__':
     parser.add_argument('--ain_eval_interval', type=int, default=50,
                         help='Mini-batch steps between AIN relearning-accuracy checks.')
 
+    # --- DELETE arguments ---
+    parser.add_argument('--delete_epochs', type=int, default=20,
+                        help='Epochs of forget-only masked-logit distillation for the DELETE baseline.')
+    parser.add_argument('--delete_lr', type=float, default=1e-4,
+                        help='SGD learning rate for the DELETE baseline.')
+    parser.add_argument('--delete_disable_bn', action='store_true',
+                        help='Freeze BatchNorm running stats during DELETE\'s forget-only fine-tune '
+                             '(there\'s no retain-set signal to keep them sane otherwise).')
+
+    # --- SSD arguments ---
+    parser.add_argument('--ssd_dampening_constant', type=float, default=1.0,
+                        help='SSD dampening constant (lambda).')
+    parser.add_argument('--ssd_selection_weighting', type=float, default=None,
+                        help='SSD selection weighting (alpha). Default: None, which resolves to '
+                             '5.0 for ViT / 10.0 otherwise (matching the reference implementation\'s '
+                             'own architecture-aware default).')
+
+    # --- CoUn arguments ---
+    parser.add_argument('--coun_epochs', type=int, default=1,
+                        help='Epochs of retain-set contrastive training for the CoUn baseline.')
+    parser.add_argument('--coun_lr', type=float, default=0.01,
+                        help='SGD learning rate for the CoUn baseline.')
+    parser.add_argument('--coun_lambda_scale', type=float, default=1.0,
+                        help='CoUn\'s contrastive-loss scaling constant (see baselines/coun.py). '
+                             'Fixed here, not swept - use the standalone coun.py CLI for the sweep.')
+    parser.add_argument('--coun_temp', type=float, default=0.1,
+                        help='CoUn\'s contrastive-loss temperature (see baselines/coun.py). '
+                             'Fixed here, not swept - use the standalone coun.py CLI for the sweep.')
+
     args, _ = parser.parse_known_args()
 
     BASELINE_DIR = f'{MODEL_CHECKPOINT_ROOT}/baseline_models'
@@ -253,6 +285,10 @@ if __name__ == '__main__':
             selective_unlearning=SELECTIVE_UNLEARNING)
 
         final_forget_loader, final_remain_loader = get_forget_loader(testset, forget_class)
+        # SSD needs the full, undivided original trainset (forget+retain
+        # combined, not just the retain split) - trainset (built above,
+        # before any forget/remain split) is exactly that.
+        full_train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
 
         for unlearn_type in methods_single:
             readouts[unlearn_type] = {data_name: {}}
@@ -302,6 +338,34 @@ if __name__ == '__main__':
                 print("Forgetting by EUK:")
                 model_euk = euk_unlearn(model, train_remain_loader, model_type)
                 readouts[unlearn_type][data_name] = all_readouts(model_euk, test_loader, final_forget_loader, final_remain_loader, name='EUK', seed=seed)
+            elif unlearn_type == 'delete':
+                print("Forgetting by DELETE:")
+                model_delete = delete_unlearn(
+                    model, train_forget_loader, device,
+                    unlearn_epoch=args.delete_epochs, unlearn_rate=args.delete_lr,
+                    disable_bn=args.delete_disable_bn,
+                )
+                readouts[unlearn_type][data_name] = all_readouts(model_delete, test_loader, final_forget_loader, final_remain_loader, name='DELETE', seed=seed)
+            elif unlearn_type == 'ssd':
+                print("Forgetting by SSD:")
+                model_ssd = ssd_unlearn(
+                    model, train_forget_loader, full_train_loader, device,
+                    dampening_constant=args.ssd_dampening_constant,
+                    selection_weighting=args.ssd_selection_weighting,
+                    model_name=model_type,
+                )
+                readouts[unlearn_type][data_name] = all_readouts(model_ssd, test_loader, final_forget_loader, final_remain_loader, name='SSD', seed=seed)
+            elif unlearn_type == 'coun':
+                print("Forgetting by CoUn:")
+                _, _, trainset_coun_raw = get_coun_datasets(data_name, model_type, data_path)
+                train_remain_loader_raw = DataLoader(trainset_coun_raw, batch_size=batch_size,
+                                                     sampler=SubsetRandomSampler(train_remain_index))
+                model_coun = coun_unlearn(
+                    model, model_type, data_name, train_remain_loader_raw, device,
+                    lambda_scale=args.coun_lambda_scale, temp=args.coun_temp,
+                    epochs=args.coun_epochs, lr=args.coun_lr,
+                )
+                readouts[unlearn_type][data_name] = all_readouts(model_coun, test_loader, final_forget_loader, final_remain_loader, name='CoUn', seed=seed)
             else:
                 print(f"Method '{unlearn_type}' not supported in single-experiment mode.")
 
@@ -317,7 +381,7 @@ if __name__ == '__main__':
     forget_bs = 16
     batch_size = 8
 
-    methods = ['finetune', 'neggrad', 'cfk', 'euk', 'scrub','ravi', 'chen','eval_orig']
+    methods = ['finetune', 'neggrad', 'cfk', 'euk', 'scrub', 'delete', 'ssd', 'coun', 'ravi', 'chen','eval_orig']
 
     SELECTIVE_UNLEARNING = False
     oculoplastics =  False
@@ -408,6 +472,10 @@ if __name__ == '__main__':
 
                 trainset, testset, dataset = get_dataset(data_name, data_path, model_name=model_type)
                 train_loader, test_loader = get_dataloader(trainset, testset, batch_size, device=device)
+                # SSD needs the full, undivided original trainset (forget+retain
+                # combined, not just the retain split) - trainset (built just
+                # above, before any forget/remain split) is exactly that.
+                full_train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
 
                 # set number of classes
                 num_classes, idx_to_class = set_num_classes(data_name, dataset)
@@ -486,6 +554,46 @@ if __name__ == '__main__':
                         readouts[unlearn_type][data_name] = all_readouts(model_euk, test_loader, final_forget_loader, final_remain_loader, name='EUK', seed=seed)
                     else:
                         readouts[unlearn_type][data_name][str(percentage)] = all_readouts(model_euk, test_loader, final_forget_loader, final_remain_loader, name='EUK', seed=seed)
+
+                elif unlearn_type == 'delete':
+                    print("Forgetting by DELETE:")
+                    model_delete = delete_unlearn(
+                        model, train_forget_loader, device,
+                        unlearn_epoch=args.delete_epochs, unlearn_rate=args.delete_lr,
+                        disable_bn=args.delete_disable_bn,
+                    )
+                    if not SELECTIVE_UNLEARNING:
+                        readouts[unlearn_type][data_name] = all_readouts(model_delete, test_loader, final_forget_loader, final_remain_loader, name='DELETE', seed=seed)
+                    else:
+                        readouts[unlearn_type][data_name][str(percentage)] = all_readouts(model_delete, test_loader, final_forget_loader, final_remain_loader, name='DELETE', seed=seed)
+
+                elif unlearn_type == 'ssd':
+                    print("Forgetting by SSD:")
+                    model_ssd = ssd_unlearn(
+                        model, train_forget_loader, full_train_loader, device,
+                        dampening_constant=args.ssd_dampening_constant,
+                        selection_weighting=args.ssd_selection_weighting,
+                        model_name=model_type,
+                    )
+                    if not SELECTIVE_UNLEARNING:
+                        readouts[unlearn_type][data_name] = all_readouts(model_ssd, test_loader, final_forget_loader, final_remain_loader, name='SSD', seed=seed)
+                    else:
+                        readouts[unlearn_type][data_name][str(percentage)] = all_readouts(model_ssd, test_loader, final_forget_loader, final_remain_loader, name='SSD', seed=seed)
+
+                elif unlearn_type == 'coun':
+                    print("Forgetting by CoUn:")
+                    _, _, trainset_coun_raw = get_coun_datasets(data_name, model_type, data_path)
+                    train_remain_loader_raw = DataLoader(trainset_coun_raw, batch_size=batch_size,
+                                                         sampler=SubsetRandomSampler(train_remain_index))
+                    model_coun = coun_unlearn(
+                        model, model_type, data_name, train_remain_loader_raw, device,
+                        lambda_scale=args.coun_lambda_scale, temp=args.coun_temp,
+                        epochs=args.coun_epochs, lr=args.coun_lr,
+                    )
+                    if not SELECTIVE_UNLEARNING:
+                        readouts[unlearn_type][data_name] = all_readouts(model_coun, test_loader, final_forget_loader, final_remain_loader, name='CoUn', seed=seed)
+                    else:
+                        readouts[unlearn_type][data_name][str(percentage)] = all_readouts(model_coun, test_loader, final_forget_loader, final_remain_loader, name='CoUn', seed=seed)
 
                 elif unlearn_type == 'scrub':
                     print("Forgetting by SCRUB:")
