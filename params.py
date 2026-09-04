@@ -101,7 +101,13 @@ def get_parameters():
                              'Off by default.')
     parser.add_argument('--centroid_refresh_interval', type=int, default=None,
                         help='How many training steps between retain-centroid refreshes. '
-                             'Default: one epoch worth of steps (len(train_forget_loader)).')
+                             'Default: one epoch worth of steps (len(train_forget_loader)). '
+                             'Only used when --centroid_mode is "dynamic".')
+    parser.add_argument('--centroid_mode', type=str, default='dynamic', choices=['dynamic', 'cached'],
+                        help='GEAR-dynamic (default) periodically recomputes retain centroids as the '
+                             'model\'s representation space shifts during unlearning. GEAR-cached '
+                             'computes them once and freezes them for the rest of the run. Only '
+                             'meaningful alongside --use_entanglement_weighting.')
     parser.add_argument('--cl_warmup_steps', type=int, default=0,
                         help='Steps to linearly ramp gamma_rep from 0 to its target value '
                              'at the start of training. 0 (default) disables the ramp.')
@@ -157,6 +163,13 @@ def get_parameters():
                 f"--data_name '{args.data_name}' requires --model_name in {allowed}, "
                 f"got '{args.model_name}'"
             )
+
+    if args.centroid_mode == 'cached' and not args.use_entanglement_weighting:
+        raise ValueError(
+            "--centroid_mode cached only means something alongside "
+            "--use_entanglement_weighting (retain centroids are only ever "
+            "computed when entanglement-score weighting is enabled)"
+        )
 
     require_arg('original_model', args.retrain_only, "--retrain_only is set")
     require_arg('original_model', not args.train and not args.retrain_only and not args.tsne_embeddings,

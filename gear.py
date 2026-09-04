@@ -447,6 +447,7 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
          # ----------------------------------------------------------
          use_entanglement_weighting=False,
          centroid_refresh_interval=None,
+         centroid_mode='dynamic',
          num_classes=None,
          cl_warmup_steps=0,
          data_name=None,
@@ -477,6 +478,15 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
     class_hierarchy.py) - it's optional and has no effect on the unlearning
     algorithm itself; when omitted (or when the dataset has no known class
     hierarchy), those two metrics are reported as 'N/A'.
+
+    centroid_mode ('dynamic' or 'cached', only meaningful when
+    use_entanglement_weighting is set) controls how retain centroids behave
+    over the run: 'dynamic' (default) recomputes them periodically, every
+    centroid_refresh_interval steps, as the model's representation space
+    shifts during unlearning - today's existing behavior. 'cached' computes
+    them once, on the first step that needs them, and freezes them for the
+    rest of the run - i.e. entanglement scores are always measured against
+    the *original* model's retain geometry, not a moving target.
     """
 
     start = time.time()
@@ -518,10 +528,11 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
         else _get_primary_layer(target_layer)
     )
     _num_classes = num_classes        # may be None; inferred lazily on first use
-    centroid_cache = None             # plain tensor buffer, refreshed every K steps
+    centroid_cache = None             # plain tensor buffer, refreshed per centroid_mode below
 
     if use_entanglement_weighting:
         print(f'use_entanglement_weighting: True | '
+              f'centroid_mode: {centroid_mode} | '
               f'centroid_refresh_interval: {centroid_refresh_interval} | '
               f'primary_layer: {_primary_layer}')
     # -------------------------------------------------------------------------
@@ -590,8 +601,17 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
                     with torch.no_grad():
                         _num_classes = unlearn_model(x_rem[:1]).size(1)
 
-            # Refresh centroids on first step and every centroid_refresh_interval steps
-            if centroid_cache is None or (itr > 0 and itr % centroid_refresh_interval == 0):
+            # GEAR-cached vs. GEAR-dynamic: 'cached' computes centroids once
+            # (on the first step that needs them) and freezes them for the
+            # rest of the run; 'dynamic' keeps refreshing them periodically
+            # as the model's representation space shifts (today's original
+            # behavior). Both share the same first-step computation.
+            if centroid_mode == 'cached':
+                needs_refresh = centroid_cache is None
+            else:
+                needs_refresh = centroid_cache is None or (itr > 0 and itr % centroid_refresh_interval == 0)
+
+            if needs_refresh:
                 centroid_cache = compute_retain_centroids(
                     unlearn_model, train_remain_loader, _primary_layer, _num_classes, device
                 )
@@ -831,6 +851,7 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
             "poison_epoch": poison_epoch,
             "feature_contrastive": feature_contrastive,
             "use_entanglement_weighting": use_entanglement_weighting,
+            "centroid_mode": centroid_mode,
             "centroid_refresh_interval": centroid_refresh_interval,
             # Entanglement diagnostics (mean over all training steps)
             "mean_entanglement_score": (

@@ -152,6 +152,7 @@ def main(args):
             results_csv=results_csv,
             use_entanglement_weighting=args.use_entanglement_weighting,
             centroid_refresh_interval=args.centroid_refresh_interval,
+            centroid_mode=args.centroid_mode,
             num_classes=num_classes,
             cl_warmup_steps=args.cl_warmup_steps,
             data_name=args.data_name,
