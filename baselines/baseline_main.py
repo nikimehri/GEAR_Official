@@ -7,6 +7,7 @@ from neggrad import *
 from finetune import finetune
 from baseline_utils import *
 from models import *
+import class_hierarchy
 
 from path_dicts import model_paths, selective_forget_models,chen_paths,ravi_paths,med_unlearn_paths, MODEL_CHECKPOINT_ROOT
 from tqdm import tqdm
@@ -44,14 +45,25 @@ def test(model, loader, idx_to_class, num_classes, device):
 
 def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, seed=2022, name='method'):
     """Standard "report card" for any unlearned model: overall test/forget/
-    remain accuracy, per-class accuracy, and a membership-inference-attack
-    score. Called once per baseline method after it's finished running."""
+    remain accuracy, per-class accuracy, Retain Adjacent/Remote Accuracy, and
+    a membership-inference-attack score. Called once per baseline method
+    after it's finished running. Like the rest of this module, relies on
+    device/num_classes/idx_to_class/data_name/dataset already being set as
+    module-level globals by the caller (single-experiment or sweep-mode
+    block) before this is invoked."""
     _, test_acc = eval(model=model, data_loader=test_loader, device=device, name='test set all class')
     _, forget_acc = eval(model=model, data_loader=final_forget_loader, device=device, name='test set forget class')
     _, remain_acc = eval(model=model, data_loader=final_remain_loader, device=device, name='test set remain class')
 
 
     per_class_accs = test(model, test_loader, idx_to_class, num_classes, device)
+
+    # Retain Adjacent/Remote Accuracy (class-taxonomy-based - see
+    # class_hierarchy.py; 'N/A' for any data_name without a known hierarchy).
+    adjacent_indices, remote_indices = class_hierarchy.get_adjacent_remote_split(
+        data_name, forget_class, dataset)
+    retain_adjacent_acc, retain_remote_acc = class_hierarchy.compute_split_accuracy(
+        model, dataset, adjacent_indices, remote_indices, device)
 
     MIA = membership_inference_attack(model, test_loader, final_forget_loader, device, seed=seed, name=name)
 
@@ -61,6 +73,8 @@ def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, s
         test_error=float(test_acc),
         forget_error=float(forget_acc),
         retain_error=float(remain_acc),
+        retain_adjacent_acc=retain_adjacent_acc,
+        retain_remote_acc=retain_remote_acc,
         MIA_mean=float(np.mean(MIA)),
         MIA_std=float(np.std(MIA)),
         per_class=per_class_accs

@@ -18,6 +18,8 @@ Run command:
 import argparse
 import copy
 import json
+import os
+import sys
 import numpy as np
 import torch
 from torch import nn
@@ -28,6 +30,15 @@ from torch.utils.data import DataLoader, SubsetRandomSampler, random_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import balanced_accuracy_score, roc_auc_score, accuracy_score
+
+# class_hierarchy.py lives at the repo root, one directory up from
+# baselines/ - add it to sys.path the same way baseline_utils.py does, so
+# this resolves regardless of the caller's working directory. Everything
+# else in this file is deliberately self-contained; this is the one shared
+# module it imports, since Retain Adjacent/Remote Accuracy should have one
+# implementation, not a duplicated copy.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import class_hierarchy
 
 # =============================================================================
 # CoUn code from paper by Khalil et al., 2025
@@ -407,6 +418,13 @@ def run_seed(seed, forget_class, data_root, checkpoint_path, num_epochs, batch_s
     mia_mean, mia_std = compute_mia(model, train_forget_loader, test_loader, device)
     lt_mia = compute_loss_threshold_mia(model, train_forget_loader, test_forget_loader, device)
 
+    # Retain Adjacent/Remote Accuracy (class-taxonomy-based - see
+    # class_hierarchy.py). CoUn is CIFAR-100-only, so data_name is fixed.
+    adjacent_indices, remote_indices = class_hierarchy.get_adjacent_remote_split(
+        'cifar100', forget_class, testset)
+    retain_adjacent_acc, retain_remote_acc = class_hierarchy.compute_split_accuracy(
+        model, testset, adjacent_indices, remote_indices, device)
+
     fa = forget_acc.item() if isinstance(forget_acc, torch.Tensor) else float(forget_acc)
     ra = remain_acc.item() if isinstance(remain_acc, torch.Tensor) else float(remain_acc)
 
@@ -418,6 +436,8 @@ def run_seed(seed, forget_class, data_root, checkpoint_path, num_epochs, batch_s
         'seed': seed,
         'forget_acc': fa,
         'remain_acc': ra,
+        'retain_adjacent_acc': retain_adjacent_acc,
+        'retain_remote_acc': retain_remote_acc,
         'mia_mean': mia_mean,
         'mia_std': mia_std,
         'lt_mia_auc': lt_mia['mia_auc'],
