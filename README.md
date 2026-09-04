@@ -242,7 +242,7 @@ python baselines/baseline_main.py \
     --original_model model_checkpoints/.../original_model.pth \
     --retrain_model model_checkpoints/.../retrain_model.pth \
     --forget_class 0 \
-    --method finetune,neggrad,cfk,euk,scrub \
+    --method finetune,neggrad,cfk,euk,scrub,delete,ssd,coun \
     --name my_baseline_run
 ```
 
@@ -252,6 +252,9 @@ python baselines/baseline_main.py \
 - `cfk` — freeze everything except the last block, fine-tune it on the retain set
 - `euk` — like `cfk`, but resets the last block's weights before fine-tuning it
 - `scrub` — knowledge-distillation baseline (alternating maximize/minimize passes against a frozen teacher); pass `--feature_contrastive`/`--use_entanglement_weighting`/`--retain_forget_weight`/etc. (same meaning as `main.py`'s) to run SCRUB with GEAR's contrastive/entanglement regularizer for a head-to-head comparison under matching settings, or `--scrub_epochs` to control training length
+- `delete` — DELETE (Decoupled Distillation to Erase, CVPR 2025): trains a copy of the model on the forget set only, distilling toward the frozen original model's own predictions with each sample's true-label logit masked out before softmax. No retain-set loss term. `--delete_epochs`/`--delete_lr`/`--delete_disable_bn` tune it. Reimplemented from the paper's description — the [reference repo](https://github.com/shaaaaron/DELETE) ships with no LICENSE file, so this is a clean reimplementation, not a code port
+- `ssd` — SSD (Selective Synaptic Dampening, AAAI 2024): no training loop at all — computes per-parameter Fisher information on the forget set and on the full original trainset, then dampens (in place) any parameter disproportionately important to the forget set. `--ssd_dampening_constant`/`--ssd_selection_weighting` tune it (selection_weighting defaults to 5 for ViT, 10 otherwise, matching the reference's own architecture-aware default). Adapted from the [reference repo](https://github.com/if-loops/selective-synaptic-dampening) (MIT licensed)
+- `coun` — CoUn (retain-only, self-supervised contrastive baseline; see `baselines/coun.py`'s module docstring). `--coun_epochs`/`--coun_lr`/`--coun_lambda_scale`/`--coun_temp` tune it — fixed here, not swept (see the standalone CLI below for the hyperparameter sweep)
 
 Every baseline also reports Retain Adjacent/Remote Accuracy (`'N/A'` unless
 `--data_name` is `cifar100`/`tinyimagenet`) automatically, and AIN when
@@ -263,13 +266,16 @@ flags needed.
 
 Results are written to `{name}_{data_name}_results.json`.
 
-**CoUn** (a retain-only, self-supervised contrastive baseline — see
-`baselines/coun.py`'s module docstring) runs as its own script, since it's
-CIFAR-100/ResNet-50-specific and doesn't share the rest of the pipeline's
-data loading:
+**CoUn's standalone CLI**: for the `lambda_scale`/`temp` hyperparameter
+sweep specifically (too expensive to run inline alongside every other
+baseline in a `--method` batch), `baselines/coun.py` still runs on its own,
+and — like every other baseline — now works across any of the 6 supported
+configs via `--data_name`/`--model_name` (previously CIFAR-100/ResNet-50 only):
 
 ```bash
-python baselines/coun.py --forget_class 0 --num_epochs 50 \
+python baselines/coun.py \
+    --data_name cifar100 --model_name resnet50 \
+    --forget_class 0 --num_epochs 50 \
     --checkpoint model_checkpoints/.../original_model.pth \
     --retrain_checkpoint model_checkpoints/.../retrain_model.pth
 ```
@@ -278,8 +284,36 @@ By default this first sweeps `lambda_scale`/`temp` on a held-out seed, then
 evaluates across seeds 45-50 and writes `coun_results.json`. Pass
 `--skip_sweep --lambda_scale <v> --temp <v>` to skip the sweep.
 `--retrain_checkpoint` is optional — CoUn also reports Retain Adjacent/Remote
-Accuracy automatically (CIFAR-100 always has a known hierarchy), and AIN
-when a retrain checkpoint is given (`'N/A'` otherwise).
+Accuracy automatically (`'N/A'` unless `--data_name` is
+`cifar100`/`tinyimagenet`), and AIN when a retrain checkpoint is given
+(`'N/A'` otherwise).
+
+### Baseline / configuration compatibility
+
+Every baseline listed above (`finetune`, `neggrad`, `cfk`, `euk`, `scrub`,
+`delete`, `ssd`, `coun`) works across all 6 supported model/dataset
+configurations:
+
+| | CIFAR-10/AllCNN | CIFAR-100/AllCNN | CIFAR-100/ResNet50 | TinyImageNet/ResNet50 | CIFAR-100/ViT | TinyImageNet/ViT |
+|---|---|---|---|---|---|---|
+| finetune / neggrad | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| cfk / euk | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| scrub | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| delete | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| ssd | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| coun | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+`finetune`/`neggrad`/`delete`/`ssd` are architecture-agnostic by
+construction (they only ever touch `model.parameters()`/`model(x)`).
+`cfk`/`euk`/`coun` each resolve a "last representational block" per
+architecture (`--target_layer`-style convention: `features[9]` for AllCNN,
+`resnet_base.layer4` for ResNet, `vit.blocks[-1]` for ViT). `scrub`'s core
+distillation loop is architecture-agnostic; its optional
+`--feature_contrastive`/`--use_entanglement_weighting` CL+ES mode needs
+`--target_layer` set correctly for whichever architecture is in play, same
+as `main.py`'s GEAR runs. `chen`/`ravi`/`eval_orig` (sweep-mode only) are
+pre-baked comparison checkpoints specific to the clinical datasets, not
+general unlearning methods — out of scope for this matrix.
 
 ## Diagnostics
 
