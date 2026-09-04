@@ -1,13 +1,19 @@
 """
 coun.py — COUN (Contrastive Unlearning via Nearest-Neighbour) baseline.
 
-Loads a pretrained ResNet-50 on CIFAR-100 and runs the COUN update (verbatim
-from the paper) across seeds [45, 46, 47, 48, 49, 50], then reports a
-per-seed table and mean±std.  Hyperparameter sweep runs on seed=44 (not in
-the eval set).
+Loads a pretrained checkpoint and runs the COUN update (verbatim from the
+paper, aside from one documented ViT-specific deviation - see coun()'s
+CLS-token handling) across seeds [45, 46, 47, 48, 49, 50], then reports a
+per-seed table and mean±std. Hyperparameter sweep runs on seed=44 (not in
+the eval set). Originally CIFAR-100/ResNet-50-only; --data_name/--model_name
+now support any of cifar10/AllCNN, cifar100/{AllCNN,resnet,resnet50,vit},
+tinyimagenet/{resnet,resnet50,vit} (see COUN_VALID_PAIRINGS). Also exposes
+coun_unlearn(), a fixed-hyperparameter wrapper used by baseline_main.py's
+dispatch so COUN can run alongside every other baseline via --method.
 
 Run command:
     python baselines/coun.py \
+        --data_name cifar100 --model_name resnet50 \
         --forget_class 0 \
         --data_root ./data \
         --num_epochs 50 \
@@ -17,6 +23,7 @@ Run command:
 
 import argparse
 import copy
+import functools
 import json
 import os
 import sys
@@ -67,9 +74,18 @@ def coun(model, layer, optimizer, retain_loader, transform, lambda_scale, temp):
             batch_size = int(images.shape[0])
             images1, images2 = transform(images), transform(images) #Create two views of images
             outputs = model(images1) #Get model outputs and extract embeddings for images 1
-            features1 = features.view(batch_size, -1)
+            # Single-line deviation from Khalil et al. 2025 verbatim code: when
+            # the hooked layer is a ViT transformer block, its raw output is a
+            # [B, N, D] token sequence - keep only the CLS token (index 0) so
+            # the flatten below produces a meaningful [B, D] embedding instead
+            # of mixing every token together. No-op for conv feature maps
+            # (already [B, C, H, W]). Read into a local (not reassigning the
+            # global `features`) so the second hook firing below isn't affected.
+            feat1 = features[:, 0, :] if features.dim() == 3 else features
+            features1 = feat1.view(batch_size, -1)
             _ = model(images2) #Extract embeddings for images 2
-            features2 = features.view(batch_size, -1)
+            feat2 = features[:, 0, :] if features.dim() == 3 else features
+            features2 = feat2.view(batch_size, -1)
             supervised_loss = nn.CrossEntropyLoss()(outputs, targets) #Supervised learning loss for images1
             # Single-line deviation from Khalil et al. 2025 verbatim code: device argument added so intra_mask is on the GPU.
             target = torch.arange(batch_size, device=images.device).unsqueeze(0) #Contrastive learning using the two views of the embeddings
@@ -95,25 +111,32 @@ def coun(model, layer, optimizer, retain_loader, transform, lambda_scale, temp):
 # SimCLR augmentation transform
 # FIX 1b: color augs run on raw [0,1] tensors; Normalize is the final step.
 # The retain loader now yields un-normalized images so this ordering is valid.
+# Parameterized by img_size/mean/std (see _coun_transform_config) instead of
+# hardcoded CIFAR-100-at-32x32, so this works across all supported configs.
 # =============================================================================
 
-_img_size = 32
-_simclr_single = transforms.Compose([
-    transforms.RandomResizedCrop(_img_size),
-    transforms.RandomHorizontalFlip(),
-    transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
-    transforms.RandomGrayscale(p=0.2),
-    transforms.Normalize((0.5071, 0.4867, 0.4408),
-                         (0.2675, 0.2565, 0.2761)),
-])
+def build_simclr_single(img_size, mean, std):
+    """Builds the per-sample SimCLR augmentation transform for a given
+    image size and normalization stats."""
+    return transforms.Compose([
+        transforms.RandomResizedCrop(img_size),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
+        transforms.RandomGrayscale(p=0.2),
+        transforms.Normalize(mean, std),
+    ])
 
-def simclr_transform(images):
+def simclr_transform(images, simclr_single):
     """Apply SimCLR augmentation independently to each image in a batch.
     Expects raw [0,1] tensors; normalizes as the last step.
-    Transforms run on CPU; output is moved back to the input's device."""
+    Transforms run on CPU; output is moved back to the input's device.
+    simclr_single is built once per run via build_simclr_single and bound
+    in via functools.partial before being passed to coun() (coun()'s own
+    'transform' parameter is a plain unary callable, kept unchanged from
+    the paper's verbatim code)."""
     device = images.device
     cpu_images = images.cpu()
-    transformed = torch.stack([_simclr_single(img) for img in cpu_images])
+    transformed = torch.stack([simclr_single(img) for img in cpu_images])
     return transformed.to(device)
 
 # =============================================================================
@@ -221,43 +244,85 @@ def eval_model(model, data_loader, device='cpu'):
 
 
 # =============================================================================
-# DATA LOADING (mirrors main.py exactly)
+# DATA LOADING (mirrors make_dataloaders.get_dataset's per-config decisions,
+# kept self-contained here per this file's existing design rather than
+# importing from make_dataloaders.py)
 # =============================================================================
 
-def get_cifar100(data_root):
-    """Standard normalized CIFAR-100 train/test sets, used for evaluation."""
-    train_transform = transforms.Compose([
-        transforms.RandomCrop(32, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(15),
-        transforms.ColorJitter(0.2, 0.2, 0.2),
-        transforms.ToTensor(),
-        transforms.Normalize((0.5071, 0.4867, 0.4408),
-                             (0.2675, 0.2565, 0.2761))
-    ])
-    test_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.5071, 0.4867, 0.4408),
-                             (0.2675, 0.2565, 0.2761))
-    ])
-    trainset_full = datasets.CIFAR100(root=data_root, train=True,  download=True, transform=train_transform)
-    testset       = datasets.CIFAR100(root=data_root, train=False, download=True, transform=test_transform)
-    return trainset_full, testset
+def _coun_transform_config(data_name, model_name):
+    """Resolves (img_size, mean, std, crop_pad) for a given config - shared
+    by get_coun_datasets and coun_unlearn so both stay in sync. model_name
+    == 'vit' takes priority (224x224/ImageNet stats/resize-based
+    augmentation, since native resolution isn't already close to 224x224);
+    otherwise each dataset uses its own native resolution/stats/crop-based
+    augmentation, matching make_dataloaders.get_dataset exactly."""
+    if model_name == 'vit':
+        return 224, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225), None
+    if data_name == 'tinyimagenet':
+        return 64, (0.4802, 0.4481, 0.3975), (0.2770, 0.2691, 0.2821), 8
+    if data_name == 'cifar10':
+        return 32, (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010), 4
+    if data_name == 'cifar100':
+        return 32, (0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761), 4
+    raise ValueError(f"COUN not configured for data_name='{data_name}'")
 
 
-# FIX 1a: raw [0,1] variant for the retain loader passed into coun().
-# Color augs must run on [0,1] data; simclr_transform appends Normalize itself.
-def get_cifar100_coun(data_root):
-    """Raw [0,1] (un-normalized) CIFAR-100 train set for coun()'s retain
-    loader - simclr_transform expects raw pixels and normalizes itself."""
-    coun_train_transform = transforms.Compose([
-        transforms.RandomCrop(32, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),  # → [0,1], NO normalize
-    ])
-    trainset_coun = datasets.CIFAR100(root=data_root, train=True, download=True,
-                                      transform=coun_train_transform)
-    return trainset_coun
+def get_coun_datasets(data_name, model_name, path='./data'):
+    """Returns (trainset, testset, trainset_raw): trainset/testset are the
+    normalized, config-appropriate train/test splits (see
+    _coun_transform_config); trainset_raw is the matching un-normalized
+    [0,1] train split (light crop/resize + flip pre-augmentation, ToTensor
+    only) for coun()'s SimCLR retain loader, which expects raw pixels and
+    normalizes itself (FIX 1a/1b, preserved from the original CIFAR-100-only
+    version, just parameterized instead of hardcoded)."""
+    img_size, mean, std, crop_pad = _coun_transform_config(data_name, model_name)
+
+    if crop_pad is not None:
+        train_aug = [transforms.RandomCrop(img_size, padding=crop_pad), transforms.RandomHorizontalFlip()]
+        test_pre = []
+    else:
+        train_aug = [transforms.Resize((img_size, img_size)), transforms.RandomHorizontalFlip()]
+        test_pre = [transforms.Resize((img_size, img_size))]
+
+    train_transform = transforms.Compose(train_aug + [transforms.ToTensor(), transforms.Normalize(mean, std)])
+    raw_transform = transforms.Compose(train_aug + [transforms.ToTensor()])  # NO normalize
+    test_transform = transforms.Compose(test_pre + [transforms.ToTensor(), transforms.Normalize(mean, std)])
+
+    if data_name in ('cifar10', 'cifar100'):
+        DatasetClass = datasets.CIFAR10 if data_name == 'cifar10' else datasets.CIFAR100
+        trainset = DatasetClass(root=path, train=True, download=True, transform=train_transform)
+        testset = DatasetClass(root=path, train=False, download=True, transform=test_transform)
+        trainset_raw = DatasetClass(root=path, train=True, download=True, transform=raw_transform)
+    elif data_name == 'tinyimagenet':
+        root = os.path.join(path, 'tiny-imagenet-200')
+        train_dir = os.path.join(root, 'train')
+        val_dir = os.path.join(root, 'val')
+        if not (os.path.isdir(train_dir) and os.path.isdir(val_dir)):
+            raise FileNotFoundError(
+                f"TinyImageNet not found at {root}. Run "
+                f"`python scripts/prepare_tinyimagenet.py --dataset_dir {path}` first."
+            )
+        trainset = datasets.ImageFolder(train_dir, transform=train_transform)
+        testset = datasets.ImageFolder(val_dir, transform=test_transform)
+        trainset_raw = datasets.ImageFolder(train_dir, transform=raw_transform)
+    else:
+        raise ValueError(f"COUN not configured for data_name='{data_name}'")
+
+    return trainset, testset, trainset_raw
+
+
+def _get_coun_layer(model, model_name):
+    """Resolves the 'penultimate' layer coun() hooks for embedding
+    extraction, per architecture - same "last representational block"
+    convention cfk_unlearn/euk_unlearn already use."""
+    if model_name in ('resnet', 'resnet50'):
+        return model.resnet_base.layer4
+    elif model_name == 'allcnn':
+        return model.features[9]
+    elif model_name == 'vit':
+        return model.vit.blocks[-1]
+    else:
+        raise NotImplementedError(f"COUN layer selection not implemented for model_name='{model_name}'")
 
 
 def split_class_data(dataset, forget_class, num_forget):
@@ -348,13 +413,47 @@ class DeviceLoader:
         return len(self.loader)
 
 
+def coun_unlearn(model, model_name, data_name, train_remain_loader_raw, device,
+                  lambda_scale=1.0, temp=0.1, epochs=1, lr=0.01):
+    """Thin wrapper around the coun() core update, for use from
+    baseline_main.py's dispatch alongside every other baseline. Runs with
+    fixed (not swept) hyperparameters - running the full lambda_scale/temp
+    grid search inline in a --method batch run would be prohibitively
+    expensive; use the standalone `python baselines/coun.py` CLI for that.
+
+    train_remain_loader_raw must yield raw [0,1] (un-normalized) images -
+    simclr_transform expects raw pixels and normalizes them itself (see
+    get_coun_datasets' trainset_raw). Returns a new, unlearned copy of
+    model; model itself is not modified."""
+    model = copy.deepcopy(model).to(device)
+    model.train()
+
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-4)
+
+    layer = _get_coun_layer(model, model_name)
+    img_size, mean, std, _ = _coun_transform_config(data_name, model_name)
+    simclr_single = build_simclr_single(img_size, mean, std)
+    transform_fn = functools.partial(simclr_transform, simclr_single=simclr_single)
+
+    retain_loader_device = DeviceLoader(train_remain_loader_raw, device)
+    for _epoch in range(epochs):
+        coun(model, layer, optimizer, retain_loader_device, transform_fn,
+             lambda_scale=lambda_scale, temp=temp)
+        scheduler.step()
+
+    model.eval()
+    return model
+
+
 # =============================================================================
 # PER-SEED RUNNER
 # =============================================================================
 
 def run_seed(seed, forget_class, data_root, checkpoint_path, num_epochs, batch_size, device,
              lambda_scale=1.0, temp=0.1, retrain_checkpoint=None,
-             ain_error_range=0.05, ain_lr=0.1, ain_max_epochs=10, ain_eval_interval=50):
+             ain_error_range=0.05, ain_lr=0.1, ain_max_epochs=10, ain_eval_interval=50,
+             data_name='cifar100', model_name='resnet50'):
     print(f"\n{'='*60}")
     print(f"  Seed {seed}")
     print(f"{'='*60}")
@@ -364,9 +463,7 @@ def run_seed(seed, forget_class, data_root, checkpoint_path, num_epochs, batch_s
     np.random.seed(seed)
 
     # Data — mirrors main.py split logic
-    trainset_full, testset = get_cifar100(data_root)
-    # FIX 1c: separate trainset with raw [0,1] images for the coun() retain loader.
-    trainset_coun_full = get_cifar100_coun(data_root)
+    trainset_full, testset, trainset_coun_full = get_coun_datasets(data_name, model_name, data_root)
 
     val_fraction = 0.1
     val_size = int(len(trainset_full) * val_fraction)
@@ -402,15 +499,18 @@ def run_seed(seed, forget_class, data_root, checkpoint_path, num_epochs, batch_s
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-4)
 
-    # COUN update — layer4 lives inside resnet_base for CustomResNet
-    layer = model.resnet_base.layer4
+    # COUN update — "penultimate" layer resolved per architecture
+    layer = _get_coun_layer(model, model_name)
+    img_size, mean, std, _ = _coun_transform_config(data_name, model_name)
+    simclr_single = build_simclr_single(img_size, mean, std)
+    transform_fn = functools.partial(simclr_transform, simclr_single=simclr_single)
     # Wrap loader so images/targets arrive on the correct device inside coun().
     retain_loader_device = DeviceLoader(train_remain_loader, device)
     print(f"Running COUN for {num_epochs} epoch(s) on retain set "
           f"({len(train_remain_loader)} batches/epoch) ...")
     for epoch in range(num_epochs):
         print(f"  epoch {epoch+1}/{num_epochs}")
-        coun(model, layer, optimizer, retain_loader_device, simclr_transform,
+        coun(model, layer, optimizer, retain_loader_device, transform_fn,
              lambda_scale=lambda_scale, temp=temp)
         scheduler.step()
 
@@ -425,9 +525,9 @@ def run_seed(seed, forget_class, data_root, checkpoint_path, num_epochs, batch_s
     lt_mia = compute_loss_threshold_mia(model, train_forget_loader, test_forget_loader, device)
 
     # Retain Adjacent/Remote Accuracy (class-taxonomy-based - see
-    # class_hierarchy.py). CoUn is CIFAR-100-only, so data_name is fixed.
+    # class_hierarchy.py; 'N/A' for any data_name without a known hierarchy).
     adjacent_indices, remote_indices = class_hierarchy.get_adjacent_remote_split(
-        'cifar100', forget_class, testset)
+        data_name, forget_class, testset)
     retain_adjacent_acc, retain_remote_acc = class_hierarchy.compute_split_accuracy(
         model, testset, adjacent_indices, remote_indices, device)
 
@@ -440,7 +540,7 @@ def run_seed(seed, forget_class, data_root, checkpoint_path, num_epochs, batch_s
             retrain_model = retrain_model.module
         retrain_model = copy.deepcopy(retrain_model).to(device)
         retrain_model.eval()
-        cache_key = f"cifar100_{forget_class}_{seed}"
+        cache_key = f"{data_name}_{forget_class}_{seed}"
         ain_score = ain_metric.compute_ain(
             model, retrain_model, original_model, train_forget_loader, test_forget_loader, device,
             error_range=ain_error_range, lr=ain_lr, max_epochs=ain_max_epochs, eval_interval=ain_eval_interval,
@@ -472,14 +572,29 @@ def run_seed(seed, forget_class, data_root, checkpoint_path, num_epochs, batch_s
 # MAIN
 # =============================================================================
 
+# data_name -> allowed model_name values, mirroring params.py's VALID_PAIRINGS
+# (lowercase model names here, matching baseline_utils.load_model's convention).
+COUN_VALID_PAIRINGS = {
+    'cifar10':      ['allcnn'],
+    'cifar100':     ['allcnn', 'resnet', 'resnet50', 'vit'],
+    'tinyimagenet': ['resnet', 'resnet50', 'vit'],
+}
+
+
 def parse_args():
     import sys
     sys.argv[1:] = [a.strip() for a in sys.argv[1:] if a.strip()]
-    p = argparse.ArgumentParser(description='COUN baseline for CIFAR-100 ResNet-50')
+    p = argparse.ArgumentParser(description='COUN baseline')
+    p.add_argument('--data_name', type=str, default='cifar100',
+                   choices=list(COUN_VALID_PAIRINGS.keys()),
+                   help='Dataset (default: cifar100, this baseline\'s original scope).')
+    p.add_argument('--model_name', type=str, default='resnet50',
+                   choices=['allcnn', 'resnet', 'resnet50', 'vit'],
+                   help='Model architecture (default: resnet50, this baseline\'s original scope).')
     p.add_argument('--forget_class', type=int, default=0,
                    help='Class index to unlearn (default: 0)')
     p.add_argument('--data_root', type=str, default='./data',
-                   help='Root directory for CIFAR-100 data')
+                   help='Root directory for the dataset')
     p.add_argument('--num_epochs', type=int, default=1,
                    help='Number of COUN epochs per seed (default: 1)')
     p.add_argument('--checkpoint', type=str,
@@ -507,17 +622,24 @@ def parse_args():
                    help='Max epochs of relearning before AIN reports non-convergence (inf).')
     p.add_argument('--ain_eval_interval', type=int, default=50,
                    help='Mini-batch steps between AIN relearning-accuracy checks.')
-    return p.parse_args()
+    args = p.parse_args()
+
+    allowed = COUN_VALID_PAIRINGS[args.data_name]
+    if args.model_name not in allowed:
+        p.error(f"--data_name '{args.data_name}' requires --model_name in {allowed}, got '{args.model_name}'")
+
+    return args
 
 
-def run_sweep(forget_class, data_root, checkpoint_path, num_epochs, batch_size, device):
+def run_sweep(forget_class, data_root, checkpoint_path, num_epochs, batch_size, device,
+              data_name='cifar100', model_name='resnet50'):
     """Grid search over lambda_scale x temp on seed=44 (not in eval set).
     Returns (best_lambda, best_temp, sweep_rows, orig_remain_acc, remain_floor)."""
     lambda_candidates = [0.1, 0.5, 1.0, 2.0, 4.0, 6.0]
     temp_candidates   = [0.05, 0.1, 0.2, 0.3]
 
     # FIX 3: compute original model's remain accuracy to set the floor.
-    _, testset_ref = get_cifar100(data_root)
+    _, testset_ref, _ = get_coun_datasets(data_name, model_name, data_root)
     _, test_remain_loader_ref = get_forget_loader(testset_ref, forget_class, batch_size=batch_size)
     orig_model = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     if isinstance(orig_model, nn.DataParallel):
@@ -550,6 +672,8 @@ def run_sweep(forget_class, data_root, checkpoint_path, num_epochs, batch_size, 
                 device=device,
                 lambda_scale=lam,
                 temp=tmp,
+                data_name=data_name,
+                model_name=model_name,
             )
             sweep_rows.append({
                 'lambda_scale': lam,
@@ -614,6 +738,8 @@ def main():
             num_epochs=args.num_epochs,
             batch_size=args.batch_size,
             device=device,
+            data_name=args.data_name,
+            model_name=args.model_name,
         )
 
     # FIX 5: eval seeds [45..50], matching the seeds used for the main method.
@@ -636,6 +762,8 @@ def main():
             ain_lr=args.ain_lr,
             ain_max_epochs=args.ain_max_epochs,
             ain_eval_interval=args.ain_eval_interval,
+            data_name=args.data_name,
+            model_name=args.model_name,
         )
         all_results.append(result)
 
@@ -666,6 +794,8 @@ def main():
             'forget_class': args.forget_class,
             'data_root': args.data_root,
             'checkpoint': args.checkpoint,
+            'data_name': args.data_name,
+            'model_name': args.model_name,
             'retrain_checkpoint': args.retrain_checkpoint,
             'num_epochs': args.num_epochs,
             'batch_size': args.batch_size,
