@@ -242,7 +242,7 @@ python baselines/baseline_main.py \
     --original_model model_checkpoints/.../original_model.pth \
     --retrain_model model_checkpoints/.../retrain_model.pth \
     --forget_class 0 \
-    --method finetune,neggrad,cfk,euk,scrub,delete,ssd,coun \
+    --method finetune,neggrad,cfk,euk,scrub,delete,ssd,coun,cu \
     --name my_baseline_run
 ```
 
@@ -254,7 +254,8 @@ python baselines/baseline_main.py \
 - `scrub` — knowledge-distillation baseline (alternating maximize/minimize passes against a frozen teacher); pass `--feature_contrastive`/`--use_entanglement_weighting`/`--retain_forget_weight`/etc. (same meaning as `main.py`'s) to run SCRUB with GEAR's contrastive/entanglement regularizer for a head-to-head comparison under matching settings, or `--scrub_epochs` to control training length
 - `delete` — DELETE (Decoupled Distillation to Erase, CVPR 2025): trains a copy of the model on the forget set only, distilling toward the frozen original model's own predictions with each sample's true-label logit masked out before softmax. No retain-set loss term. `--delete_epochs`/`--delete_lr`/`--delete_disable_bn` tune it. Reimplemented from the paper's description — the [reference repo](https://github.com/shaaaaron/DELETE) ships with no LICENSE file, so this is a clean reimplementation, not a code port
 - `ssd` — SSD (Selective Synaptic Dampening, AAAI 2024): no training loop at all — computes per-parameter Fisher information on the forget set and on the full original trainset, then dampens (in place) any parameter disproportionately important to the forget set. `--ssd_dampening_constant`/`--ssd_selection_weighting` tune it (selection_weighting defaults to 5 for ViT, 10 otherwise, matching the reference's own architecture-aware default). Adapted from the [reference repo](https://github.com/if-loops/selective-synaptic-dampening) (MIT licensed)
-- `coun` — CoUn (retain-only, self-supervised contrastive baseline; see `baselines/coun.py`'s module docstring). `--coun_epochs`/`--coun_lr`/`--coun_lambda_scale`/`--coun_temp` tune it — fixed here, not swept (see the standalone CLI below for the hyperparameter sweep)
+- `coun` — CoUn (retain-only, self-supervised contrastive baseline, Khalil et al. 2025; see `baselines/coun.py`'s module docstring). `--coun_epochs`/`--coun_lr`/`--coun_lambda_scale`/`--coun_temp` tune it — fixed here, not swept (see the standalone CLI below for the hyperparameter sweep)
+- `cu` — CU (Contrastive Unlearning, Lee et al. 2024, [arXiv:2401.10458](https://arxiv.org/abs/2401.10458) — **not the same paper as `coun` above**, despite the similar name): a "reversed" InfoNCE-style contrastive loss operating directly on each model's `get_embedding(x)` output (no hooked intermediate layer, so it's architecture-agnostic with no per-model special-casing at all) — pushes each forget sample's embedding away from same-class retain embeddings and toward different-class ones, combined with a plain retain-set cross-entropy term. No frozen reference/teacher or retrain/gold model needed. `--cu_epochs`/`--cu_lr`/`--cu_temp`/`--cu_lambda_ul`/`--cu_lambda_ce`/`--cu_omega` tune it. The paper doesn't state numeric hyperparameter values, so the defaults are this reimplementation's own reasonable choices, documented as such in `baselines/cu.py`
 
 Every baseline also reports Retain Adjacent/Remote Accuracy (`'N/A'` unless
 `--data_name` is `cifar100`/`tinyimagenet`) automatically, and AIN when
@@ -291,7 +292,7 @@ Accuracy automatically (`'N/A'` unless `--data_name` is
 ### Baseline / configuration compatibility
 
 Every baseline listed above (`finetune`, `neggrad`, `cfk`, `euk`, `scrub`,
-`delete`, `ssd`, `coun`) works across all 6 supported model/dataset
+`delete`, `ssd`, `coun`, `cu`) works across all 6 supported model/dataset
 configurations:
 
 | | CIFAR-10/AllCNN | CIFAR-100/AllCNN | CIFAR-100/ResNet50 | TinyImageNet/ResNet50 | CIFAR-100/ViT | TinyImageNet/ViT |
@@ -302,13 +303,18 @@ configurations:
 | delete | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | ssd | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | coun | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| cu | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 `finetune`/`neggrad`/`delete`/`ssd` are architecture-agnostic by
-construction (they only ever touch `model.parameters()`/`model(x)`).
-`cfk`/`euk`/`coun` each resolve a "last representational block" per
-architecture (`--target_layer`-style convention: `features[9]` for AllCNN,
-`resnet_base.layer4` for ResNet, `vit.blocks[-1]` for ViT). `scrub`'s core
-distillation loop is architecture-agnostic; its optional
+construction (they only ever touch `model.parameters()`/`model(x)`). `cu`
+is likewise architecture-agnostic, but for a different reason — it operates
+on each model's own `get_embedding(x)` method rather than a hooked
+intermediate layer, so unlike `cfk`/`euk`/`coun` it needs no per-architecture
+"which layer" resolution at all. `cfk`/`euk`/`coun` each resolve a "last
+representational block" per architecture (`--target_layer`-style
+convention: `features[9]` for AllCNN, `resnet_base.layer4` for ResNet,
+`vit.blocks[-1]` for ViT). `scrub`'s core distillation loop is
+architecture-agnostic; its optional
 `--feature_contrastive`/`--use_entanglement_weighting` CL+ES mode needs
 `--target_layer` set correctly for whichever architecture is in play, same
 as `main.py`'s GEAR runs. `chen`/`ravi`/`eval_orig` (sweep-mode only) are
@@ -389,6 +395,33 @@ they differ from each paper's own reference code):
       archivePrefix={arXiv},
       primaryClass={cs.LG},
       url={https://arxiv.org/abs/2201.05629},
+}
+```
+
+Three of the baselines (`delete`, `ssd`, `cu`) are also reimplementations of
+ideas from other papers, not original to this repo (see each module's own
+docstring in `baselines/` for exactly what was reimplemented/adapted vs. the
+reference source, and any deviations):
+
+```bibtex
+@misc{delete2025,
+      title={DELETE: Decoupled Distillation to Erase},
+      note={CVPR 2025 Highlight. Reference implementation: https://github.com/shaaaaron/DELETE (no LICENSE file found)},
+}
+
+@misc{ssd2024,
+      title={Selective Synaptic Dampening},
+      note={AAAI 2024. Reference implementation (MIT licensed): https://github.com/if-loops/selective-synaptic-dampening},
+}
+
+@misc{lee2024contrastive,
+      title={Contrastive Unlearning: A Contrastive Approach to Machine Unlearning},
+      author={Hong Kyu Lee and Qiuchen Zhang and Carl Yang and Jian Lou and Li Xiong},
+      year={2024},
+      eprint={2401.10458},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2401.10458},
 }
 ```
 
