@@ -7,6 +7,7 @@ import tqdm
 import time
 from make_dataloaders import *
 import class_hierarchy
+import ain_metric
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import csv
@@ -449,6 +450,18 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
          num_classes=None,
          cl_warmup_steps=0,
          data_name=None,
+         # ----------------------------------------------------------
+         # AIN (Anamnesis Index) - see ain_metric.py. Off by default:
+         # unlike the other metrics, this involves actually retraining a
+         # copy of the model (relearn time), not just an extra eval pass.
+         # ----------------------------------------------------------
+         compute_ain=False,
+         ain_error_range=0.05,
+         ain_lr=0.1,
+         ain_max_epochs=10,
+         ain_eval_interval=50,
+         ain_cache_path='ain_gold_cache.json',
+         seed=None,
          ):
     """Trains an unlearn_model away from ori_model's weights by minimizing a
     retain cross-entropy loss plus a feature-space contrastive/entanglement
@@ -787,6 +800,22 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
     else:
         print('[RETRAIN BASELINE] No retrain model provided — skipping baseline evaluation.')
 
+    # --- AIN (Anamnesis Index) ----------------------------------------------
+    # Opt-in and requires a retrain model (it's the gold-standard denominator
+    # of the AIN ratio) - 'N/A' otherwise, same convention as Retain
+    # Adjacent/Remote Accuracy above.
+    ain_score = 'N/A'
+    if compute_ain and retrain_model is not None:
+        cache_key = f"{data_name}_{forget_class}_{seed}" if (data_name is not None and seed is not None) else None
+        ain_score = ain_metric.compute_ain(
+            unlearn_model, retrain_model, ori_model, train_forget_loader, test_forget_loader, device,
+            error_range=ain_error_range, lr=ain_lr, max_epochs=ain_max_epochs, eval_interval=ain_eval_interval,
+            cache_key=cache_key, cache_path=ain_cache_path,
+        )
+        print(f'AIN: {ain_score}')
+    elif compute_ain:
+        print('[AIN] compute_ain is set but no retrain model was provided - skipping (AIN reported as N/A).')
+
     # --- Log everything to CSV ---------------------------------------------
     if results_csv is not None:
         row = {
@@ -820,6 +849,7 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
             "mia_std": mia_std,
             "lt_mia_auc": lt_mia_auc,
             "lt_mia_acc": lt_mia_acc,
+            "AIN": ain_score,
             "unlearning_time": gear_time,
         }
         row.update(retrain_metrics)
@@ -829,4 +859,4 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
     print('Time Consuming:', end - start, 'secs')
 
     unlearn_model.to(device)
-    return unlearn_model, forget_acc, remain_acc, gear_time, test_acc, mia_mean, retain_adjacent_acc, retain_remote_acc
+    return unlearn_model, forget_acc, remain_acc, gear_time, test_acc, mia_mean, retain_adjacent_acc, retain_remote_acc, ain_score

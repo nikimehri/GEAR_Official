@@ -155,12 +155,18 @@ def main(args):
             num_classes=num_classes,
             cl_warmup_steps=args.cl_warmup_steps,
             data_name=args.data_name,
+            compute_ain=args.compute_ain,
+            ain_error_range=args.ain_error_range,
+            ain_lr=args.ain_lr,
+            ain_max_epochs=args.ain_max_epochs,
+            ain_eval_interval=args.ain_eval_interval,
+            seed=args.seed,
         )
 
         if args.run_sota:
             print('RUNNING GEAR UNLEARNING (evaluated against the test set)')
             save_me = args.name + '_SOTA'
-            unlearn_model_sota, forget_acc_sota, remain_acc_sota, unlearning_time, _, _, _, _ = gear.gear(
+            unlearn_model_sota, forget_acc_sota, remain_acc_sota, unlearning_time, _, _, _, _, _ = gear.gear(
                 ori_model, train_forget_loader, trainset, testset, test_loader, device,
                 test_metadata=test_dict, train_metadata=train_dict, output_name=save_me,
                 **gear_kwargs
@@ -189,7 +195,7 @@ def main(args):
         if args.specific_settings:
             save_me = args.name
 
-            unlearn_model, forget_acc, remain_acc, gear_time, test_acc, mia_score, retain_adjacent_acc, retain_remote_acc = gear.gear(
+            unlearn_model, forget_acc, remain_acc, gear_time, test_acc, mia_score, retain_adjacent_acc, retain_remote_acc, ain_score = gear.gear(
                 ori_model, train_forget_loader, trainset, valset, val_loader, device,
                 test_metadata=val_dict, train_metadata=train_dict, output_name=save_me,
                 **gear_kwargs
@@ -206,6 +212,9 @@ def main(args):
             row_data['Retain Adjacent Acc'] = retain_adjacent_acc
             row_data['Test Acc'] = test_acc.detach().item() if isinstance(test_acc, torch.Tensor) else test_acc
             row_data['MIA'] = mia_score
+            # 'N/A' unless --compute_ain was set (gear() already returns 'N/A'
+            # by default - AIN is opt-in since it involves actual retraining).
+            row_data['AIN'] = ain_score
             row_data['Unlearning Time'] = gear_time
 
             with open(output_file_name, 'a', newline='') as csvfile:
