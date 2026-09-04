@@ -156,7 +156,7 @@ def train_save_model(train_loader, val_loader, model_name, optim_name, learning_
     elif model_name == 'AllCNN':
         if data_name == 'fashionmnist':
             model = AllCNN(n_channels=1, num_classes=num_classes)
-        elif data_name in ('medmnist', 'svhn', 'cifar10'):
+        elif data_name in ('medmnist', 'svhn', 'cifar10', 'cifar100'):
             model = AllCNN(n_channels=3, num_classes=num_classes)
         else:
             raise ValueError(f"AllCNN not configured for data_name='{data_name}'")

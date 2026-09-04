@@ -152,7 +152,7 @@ def get_parameters():
 
     VALID_PAIRINGS = {
         'cifar10':      ['AllCNN'],
-        'cifar100':     ['resnet', 'resnet50', 'vit'],
+        'cifar100':     ['AllCNN', 'resnet', 'resnet50', 'vit'],
         'fashionmnist': ['AllCNN'],
         'tinyimagenet': ['resnet', 'resnet50', 'vit'],
     }

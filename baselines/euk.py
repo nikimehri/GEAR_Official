@@ -25,8 +25,15 @@ def cfk_unlearn(model_cfk, r_loader, model_name):
             for param in model_cfk.features[k].parameters():
                 param.requires_grad_(True)
 
-    elif model_name == "resnet":
+    elif model_name in ("resnet", "resnet50"):
         for param in model_cfk.resnet_base.layer4.parameters():
+            param.requires_grad_(True)
+
+    elif model_name == 'vit':
+        # Last transformer block only - the classifier head stays frozen,
+        # mirroring allcnn/resnet's "unfreeze only the last representational
+        # block" convention above.
+        for param in model_cfk.vit.blocks[-1].parameters():
             param.requires_grad_(True)
 
     else:
@@ -75,7 +82,7 @@ def euk_unlearn(model, r_loader, model_name):
             for param in model_euk.features[k].parameters():
                 param.requires_grad_(True)
 
-    elif model_name == "resnet":
+    elif model_name in ("resnet", "resnet50"):
         with torch.no_grad():
             for i in range(0,2):
                 try:
@@ -121,6 +128,17 @@ def euk_unlearn(model, r_loader, model_name):
 
 
         for param in model_euk.resnet_base.layer4.parameters():
+            param.requires_grad_(True)
+
+    elif model_name == 'vit':
+        # Reset the last transformer block to its pre-unlearning weights,
+        # then unfreeze just that block - ViT blocks are structurally
+        # uniform, so a single load_state_dict does what the resnet branch
+        # above needs many per-submodule copies for.
+        with torch.no_grad():
+            model_euk.vit.blocks[-1].load_state_dict(model_initial.vit.blocks[-1].state_dict())
+
+        for param in model_euk.vit.blocks[-1].parameters():
             param.requires_grad_(True)
 
     else:
