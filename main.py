@@ -122,9 +122,7 @@ def main(args):
         plt.savefig(args.embeddings_name + '.png', dpi=600)
 
 
-    '''
-    Not included in TMLR paper but keeping for future work
-    '''
+    
     if args.ensemble:
         run_exps(args, valset, testset, train_remain_loader, finetune=True, frozen=False)
 
