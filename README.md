@@ -256,6 +256,7 @@ python baselines/baseline_main.py \
 - `ssd` — SSD (Selective Synaptic Dampening, AAAI 2024): no training loop at all — computes per-parameter Fisher information on the forget set and on the full original trainset, then dampens (in place) any parameter disproportionately important to the forget set. `--ssd_dampening_constant`/`--ssd_selection_weighting` tune it (selection_weighting defaults to 5 for ViT, 10 otherwise, matching the reference's own architecture-aware default). Adapted from the [reference repo](https://github.com/if-loops/selective-synaptic-dampening) (MIT licensed)
 - `coun` — CoUn (retain-only, self-supervised contrastive baseline, Khalil et al. 2025; see `baselines/coun.py`'s module docstring). `--coun_epochs`/`--coun_lr`/`--coun_lambda_scale`/`--coun_temp` tune it — fixed here, not swept (see the standalone CLI below for the hyperparameter sweep)
 - `cu` — CU (Contrastive Unlearning, Lee et al. 2024, [arXiv:2401.10458](https://arxiv.org/abs/2401.10458) — **not the same paper as `coun` above**, despite the similar name): a "reversed" InfoNCE-style contrastive loss operating directly on each model's `get_embedding(x)` output (no hooked intermediate layer, so it's architecture-agnostic with no per-model special-casing at all) — pushes each forget sample's embedding away from same-class retain embeddings and toward different-class ones, combined with a plain retain-set cross-entropy term. No frozen reference/teacher or retrain/gold model needed. `--cu_epochs`/`--cu_lr`/`--cu_temp`/`--cu_lambda_ul`/`--cu_lambda_ce`/`--cu_omega` tune it. The paper doesn't state numeric hyperparameter values, so the defaults are this reimplementation's own reasonable choices, documented as such in `baselines/cu.py`
+- `eval_orig` — not an unlearning method: evaluates `--retrain_model` itself (reported as "Retrain") through the same `all_readouts()` every other method uses. Useful as a gold-standard reference row — its Retain Adjacent/Remote Accuracy is the practical ceiling other methods are compared against, and its AIN (retrain evaluated against itself as both the "unlearned" and gold-standard model) should land at ≈1.0, a sanity check that AIN is calibrated correctly
 
 Every baseline also reports Retain Adjacent/Remote Accuracy (`'N/A'` unless
 `--data_name` is `cifar100`/`tinyimagenet`) automatically, and AIN when
@@ -317,9 +318,13 @@ convention: `features[9]` for AllCNN, `resnet_base.layer4` for ResNet,
 architecture-agnostic; its optional
 `--feature_contrastive`/`--use_entanglement_weighting` CL+ES mode needs
 `--target_layer` set correctly for whichever architecture is in play, same
-as `main.py`'s GEAR runs. `chen`/`ravi`/`eval_orig` (sweep-mode only) are
-pre-baked comparison checkpoints specific to the clinical datasets, not
-general unlearning methods — out of scope for this matrix.
+as `main.py`'s GEAR runs. `chen`/`ravi` (sweep-mode only) are pre-baked
+comparison checkpoints specific to the clinical datasets, not general
+unlearning methods — out of scope for this matrix. `eval_orig` (available in
+both modes) isn't an unlearning method either — it evaluates `--retrain_model`
+itself as a gold-standard reference row (see above) — but works across all
+6 configs the same way every other method does, since it just runs whatever
+checkpoint it's given through `all_readouts()`.
 
 ## Diagnostics
 
