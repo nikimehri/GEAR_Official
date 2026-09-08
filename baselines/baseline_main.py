@@ -393,6 +393,13 @@ if __name__ == '__main__':
                     eval_forget_loader=final_forget_loader,
                 )
                 readouts[unlearn_type][data_name] = all_readouts(model_cu, test_loader, final_forget_loader, final_remain_loader, name='CU', seed=seed)
+            elif unlearn_type == 'eval_orig':
+                print("Evaluating Retrain Model:")
+                model0 = load_model(model_type, num_classes=num_classes, data_name=data_name).to(device)
+                model0 = load_model_state(model0, retrain_model_path)
+                readouts[unlearn_type][data_name] = {
+                    "Retrain": all_readouts(model0, test_loader, final_forget_loader, final_remain_loader, name='Retrain', seed=seed)
+                }
             else:
                 print(f"Method '{unlearn_type}' not supported in single-experiment mode.")
 
