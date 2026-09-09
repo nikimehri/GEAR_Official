@@ -527,6 +527,18 @@ def get_dataset(data_name, path='./data', model_name=None):
                 f"TinyImageNet not found at {root}. Run "
                 f"`python scripts/prepare_tinyimagenet.py --dataset_dir {path}` first."
             )
+        if os.path.isdir(os.path.join(val_dir, 'images')):
+            # val/ still has its original flat layout (val/images/*.JPEG) -
+            # prepare_tinyimagenet.py's reorganize_val() hasn't run against
+            # this path yet. Loading it as-is via ImageFolder would silently
+            # produce a single-class dataset (all 10000 images under one
+            # 'images' folder) instead of failing here.
+            raise FileNotFoundError(
+                f"TinyImageNet val/ at {val_dir} hasn't been reorganized into "
+                f"per-class subdirectories yet. Run "
+                f"`python scripts/prepare_tinyimagenet.py --dataset_dir {path}` "
+                f"to fix it (safe to re-run)."
+            )
 
         if model_name == 'vit':
             train_transform = transforms.Compose([
