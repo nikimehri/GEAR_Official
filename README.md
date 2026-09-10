@@ -257,6 +257,7 @@ python baselines/baseline_main.py \
 - `coun` — CoUn (retain-only, self-supervised contrastive baseline, Khalil et al. 2025; see `baselines/coun.py`'s module docstring). `--coun_epochs`/`--coun_lr`/`--coun_lambda_scale`/`--coun_temp` tune it — fixed here, not swept (see the standalone CLI below for the hyperparameter sweep)
 - `cu` — CU (Contrastive Unlearning, Lee et al. 2024, [arXiv:2401.10458](https://arxiv.org/abs/2401.10458) — **not the same paper as `coun` above**, despite the similar name): a "reversed" InfoNCE-style contrastive loss operating directly on each model's `get_embedding(x)` output (no hooked intermediate layer, so it's architecture-agnostic with no per-model special-casing at all) — pushes each forget sample's embedding away from same-class retain embeddings and toward different-class ones, combined with a plain retain-set cross-entropy term. No frozen reference/teacher or retrain/gold model needed. `--cu_epochs`/`--cu_lr`/`--cu_temp`/`--cu_lambda_ul`/`--cu_lambda_ce`/`--cu_omega` tune it. The paper doesn't state numeric hyperparameter values, so the defaults are this reimplementation's own reasonable choices, documented as such in `baselines/cu.py`
 - `eval_orig` — not an unlearning method: evaluates `--retrain_model` itself (reported as "Retrain") through the same `all_readouts()` every other method uses. Useful as a gold-standard reference row — its Retain Adjacent/Remote Accuracy is the practical ceiling other methods are compared against, and its AIN (retrain evaluated against itself as both the "unlearned" and gold-standard model) should land at ≈1.0, a sanity check that AIN is calibrated correctly
+- `cheng_unlearn` — the unlearning method from Cheng et al., "Machine Unlearning under Retain-Forget Entanglement" ([arXiv:2603.26569](https://arxiv.org/abs/2603.26569)) — the same paper Retain Adjacent/Remote Accuracy itself comes from, so this is a natural comparison point, though its own score on that metric has a built-in home-field advantage (its loss function directly targets the quantity the metric measures — see `baselines/cheng_unlearn.py`'s docstring). Two stages: an augmented-Lagrangian pass that pushes up forget-set loss while constraining mean loss on the retain-**remote** split to stay near the original model's value, then a Wasserstein-2-regularized fine-tuning pass where the retain-**adjacent** gradient is projected orthogonal to the forget/remote gradients before being applied. **Only runs on datasets with a known class hierarchy (`cifar100`/`tinyimagenet`, not `cifar10`)** — unlike every other baseline, it needs the Retain Adjacent/Remote split as an actual training input, not just an evaluation metric, so there's nothing for it to do on `cifar10`; it logs a message and skips rather than erroring. `--cheng_stage1_epochs`/`--cheng_stage1_lr`/`--cheng_mu`/`--cheng_gamma`/`--cheng_c`/`--cheng_stage2_epochs`/`--cheng_stage2_lr`/`--cheng_momentum`/`--cheng_alpha` tune it. Reimplemented from the paper's equations and reference-code structure (no LICENSE file upstream, and the exact Stage 2 gradient-combination rule wasn't independently verified against the reference code — documented as a best-effort reading in the module docstring, not a guaranteed-exact match). The most compute-expensive baseline in this repo (two training stages, and Stage 2 computes three separate backward passes per step) — optional to run
 
 Every baseline also reports Retain Adjacent/Remote Accuracy (`'N/A'` unless
 `--data_name` is `cifar100`/`tinyimagenet`) automatically, and AIN when
@@ -292,9 +293,10 @@ Accuracy automatically (`'N/A'` unless `--data_name` is
 
 ### Baseline / configuration compatibility
 
-Every baseline listed above (`finetune`, `neggrad`, `cfk`, `euk`, `scrub`,
-`delete`, `ssd`, `coun`, `cu`) works across all 6 supported model/dataset
-configurations:
+Every baseline listed above except `cheng_unlearn` works across all 6
+supported model/dataset configurations. `cheng_unlearn` needs a known class
+hierarchy as a training input (see above), so it's inherently inapplicable
+to `cifar10` — not a portability gap, a property of the algorithm itself:
 
 | | CIFAR-10/AllCNN | CIFAR-100/AllCNN | CIFAR-100/ResNet50 | TinyImageNet/ResNet50 | CIFAR-100/ViT | TinyImageNet/ViT |
 |---|---|---|---|---|---|---|
@@ -305,6 +307,7 @@ configurations:
 | ssd | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | coun | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | cu | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| cheng_unlearn | N/A | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 `finetune`/`neggrad`/`delete`/`ssd` are architecture-agnostic by
 construction (they only ever touch `model.parameters()`/`model(x)`). `cu`
@@ -382,7 +385,12 @@ This repo builds on:
 Two evaluation metrics reported alongside GEAR and every baseline are also
 implementations of ideas from other papers (see `class_hierarchy.py` and
 `ain_metric.py`'s module docstrings for the exact definitions used and how
-they differ from each paper's own reference code):
+they differ from each paper's own reference code). Cheng et al.'s paper is
+cited twice for two different reasons: once here for Retain Adjacent/Remote
+Accuracy (the evaluation metric), and again below for `cheng_unlearn` (their
+own proposed unlearning method, reimplemented as a baseline) — their
+[reference repo](https://github.com/Jingpu-Cheng/unlearning-entanglement)
+has no LICENSE file either, same situation as DELETE:
 
 ```bibtex
 @misc{cheng2026retainforgetentanglement,
@@ -403,10 +411,10 @@ they differ from each paper's own reference code):
 }
 ```
 
-Three of the baselines (`delete`, `ssd`, `cu`) are also reimplementations of
-ideas from other papers, not original to this repo (see each module's own
-docstring in `baselines/` for exactly what was reimplemented/adapted vs. the
-reference source, and any deviations):
+Four of the baselines (`delete`, `ssd`, `cu`, `cheng_unlearn`) are also
+reimplementations of ideas from other papers, not original to this repo
+(see each module's own docstring in `baselines/` for exactly what was
+reimplemented/adapted vs. the reference source, and any deviations):
 
 ```bibtex
 @misc{delete2025,
@@ -417,6 +425,14 @@ reference source, and any deviations):
 @misc{ssd2024,
       title={Selective Synaptic Dampening},
       note={AAAI 2024. Reference implementation (MIT licensed): https://github.com/if-loops/selective-synaptic-dampening},
+}
+
+@misc{cheng2026retainforgetentanglement-method,
+      title={Machine Unlearning under Retain-Forget Entanglement},
+      note={The paper's own proposed unlearning method (reimplemented as the cheng_unlearn baseline) - see the cheng2026retainforgetentanglement entry above for the full citation, cited separately here since it's a different piece of the same paper (algorithm vs. evaluation metric) being used},
+      eprint={2603.26569},
+      archivePrefix={arXiv},
+      url={https://arxiv.org/abs/2603.26569},
 }
 
 @misc{lee2024contrastive,
