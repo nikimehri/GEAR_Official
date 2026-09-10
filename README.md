@@ -178,7 +178,7 @@ without them.
 | `--model_name` | `AllCNN`, `resnet`, `resnet50`, or `vit`. `cifar10`/`fashionmnist` require `AllCNN`; `cifar100`/`tinyimagenet` require `resnet`/`resnet50`/`vit`. `vit` resizes inputs to 224x224 with ImageNet normalization automatically (see `models.ViT`) |
 | `--dataset_dir`, `--checkpoint_dir` | where data downloads to / checkpoints save to |
 | `--val_fraction` | fraction of the training set held out for validation (default 0.1) |
-| `--seed` | RNG seed, also seeds the train/val split |
+| `--seed` | Seeds NumPy/PyTorch/CUDA globally (weight init, dropout, augmentation, training stochasticity) and the train/val split generator - vary this for genuinely independent multi-seed replicates |
 
 **Mode** — pick one training/loading mode and (optionally) one unlearning mode:
 | Flag | Meaning |
@@ -266,6 +266,11 @@ Every baseline also reports Retain Adjacent/Remote Accuracy (`'N/A'` unless
 defaults as `main.py`'s flags of the same name) — both computed once per
 `all_readouts()` call, covering every method in `--method` with no other
 flags needed.
+
+`--seed` (default 2022) seeds NumPy/PyTorch/CUDA globally and is threaded
+into every `all_readouts()` call (MIA's cross-validation split, AIN's cache
+key) — vary it across runs for genuinely independent multi-seed replicates,
+same as `main.py`'s `--seed`.
 
 Results are written to `{name}_{data_name}_results.json`.
 
