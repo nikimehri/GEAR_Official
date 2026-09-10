@@ -9,6 +9,7 @@ from delete import delete_unlearn
 from ssd import ssd_unlearn
 from coun import get_coun_datasets, coun_unlearn
 from cu import cu_unlearn
+from cheng_unlearn import cheng_unlearn
 from baseline_utils import *
 from models import *
 import class_hierarchy
@@ -248,6 +249,28 @@ if __name__ == '__main__':
     parser.add_argument('--cu_omega', type=int, default=4,
                         help='CU\'s inner-loop repetitions per forget batch (paper: <= 4).')
 
+    # --- Cheng et al. (retain-forget entanglement) arguments ---
+    # Only applicable to data_name values with a known class hierarchy
+    # (cifar100/tinyimagenet) - see baselines/cheng_unlearn.py.
+    parser.add_argument('--cheng_stage1_epochs', type=int, default=1,
+                        help='Stage 1 (augmented-Lagrangian constrained forgetting) epochs.')
+    parser.add_argument('--cheng_stage1_lr', type=float, default=2.5e-6,
+                        help='Stage 1 Adam learning rate.')
+    parser.add_argument('--cheng_mu', type=float, default=10.0,
+                        help='Stage 1 augmented-Lagrangian penalty weight (mu).')
+    parser.add_argument('--cheng_gamma', type=float, default=1.0,
+                        help='Stage 1 raw (unclipped) forget-loss weight (gamma).')
+    parser.add_argument('--cheng_c', type=float, default=10.0,
+                        help='Stage 1 forget-loss clip value (c).')
+    parser.add_argument('--cheng_stage2_epochs', type=int, default=6,
+                        help='Stage 2 (W2-regularized gradient-projected fine-tuning) epochs.')
+    parser.add_argument('--cheng_stage2_lr', type=float, default=2e-5,
+                        help='Stage 2 SGD learning rate.')
+    parser.add_argument('--cheng_momentum', type=float, default=0.9,
+                        help='Stage 2 SGD momentum.')
+    parser.add_argument('--cheng_alpha', type=float, default=0.5,
+                        help='Stage 2 W2-penalty blend weight (alpha).')
+
     args, _ = parser.parse_known_args()
 
     BASELINE_DIR = f'{MODEL_CHECKPOINT_ROOT}/baseline_models'
@@ -393,6 +416,23 @@ if __name__ == '__main__':
                     eval_forget_loader=final_forget_loader,
                 )
                 readouts[unlearn_type][data_name] = all_readouts(model_cu, test_loader, final_forget_loader, final_remain_loader, name='CU', seed=seed)
+            elif unlearn_type == 'cheng_unlearn':
+                print("Forgetting by Cheng et al. (retain-forget entanglement):")
+                adjacent_indices, remote_indices = class_hierarchy.get_adjacent_remote_split(data_name, forget_class, trainset)
+                if adjacent_indices is None or remote_indices is None:
+                    print(f"[cheng_unlearn] No class hierarchy for data_name='{data_name}' - this baseline "
+                          f"needs Retain Adjacent/Remote splits as a training input, not just an eval metric. Skipping.")
+                else:
+                    adjacent_loader = DataLoader(trainset, batch_size=batch_size, sampler=SubsetRandomSampler(adjacent_indices))
+                    remote_loader = DataLoader(trainset, batch_size=batch_size, sampler=SubsetRandomSampler(remote_indices))
+                    model_cheng = cheng_unlearn(
+                        model, train_forget_loader, adjacent_loader, remote_loader, device,
+                        stage1_epochs=args.cheng_stage1_epochs, stage1_lr=args.cheng_stage1_lr,
+                        mu=args.cheng_mu, gamma=args.cheng_gamma, c=args.cheng_c,
+                        stage2_epochs=args.cheng_stage2_epochs, stage2_lr=args.cheng_stage2_lr,
+                        momentum=args.cheng_momentum, alpha=args.cheng_alpha,
+                    )
+                    readouts[unlearn_type][data_name] = all_readouts(model_cheng, test_loader, final_forget_loader, final_remain_loader, name='ChengUnlearn', seed=seed)
             elif unlearn_type == 'eval_orig':
                 print("Evaluating Retrain Model:")
                 model0 = load_model(model_type, num_classes=num_classes, data_name=data_name).to(device)
@@ -415,7 +455,7 @@ if __name__ == '__main__':
     forget_bs = 16
     batch_size = 8
 
-    methods = ['finetune', 'neggrad', 'cfk', 'euk', 'scrub', 'delete', 'ssd', 'coun', 'cu', 'ravi', 'chen','eval_orig']
+    methods = ['finetune', 'neggrad', 'cfk', 'euk', 'scrub', 'delete', 'ssd', 'coun', 'cu', 'cheng_unlearn', 'ravi', 'chen','eval_orig']
 
     SELECTIVE_UNLEARNING = False
     oculoplastics =  False
@@ -641,6 +681,27 @@ if __name__ == '__main__':
                         readouts[unlearn_type][data_name] = all_readouts(model_cu, test_loader, final_forget_loader, final_remain_loader, name='CU', seed=seed)
                     else:
                         readouts[unlearn_type][data_name][str(percentage)] = all_readouts(model_cu, test_loader, final_forget_loader, final_remain_loader, name='CU', seed=seed)
+
+                elif unlearn_type == 'cheng_unlearn':
+                    print("Forgetting by Cheng et al. (retain-forget entanglement):")
+                    adjacent_indices, remote_indices = class_hierarchy.get_adjacent_remote_split(data_name, forget_class, trainset)
+                    if adjacent_indices is None or remote_indices is None:
+                        print(f"[cheng_unlearn] No class hierarchy for data_name='{data_name}' - this baseline "
+                              f"needs Retain Adjacent/Remote splits as a training input, not just an eval metric. Skipping.")
+                    else:
+                        adjacent_loader = DataLoader(trainset, batch_size=batch_size, sampler=SubsetRandomSampler(adjacent_indices))
+                        remote_loader = DataLoader(trainset, batch_size=batch_size, sampler=SubsetRandomSampler(remote_indices))
+                        model_cheng = cheng_unlearn(
+                            model, train_forget_loader, adjacent_loader, remote_loader, device,
+                            stage1_epochs=args.cheng_stage1_epochs, stage1_lr=args.cheng_stage1_lr,
+                            mu=args.cheng_mu, gamma=args.cheng_gamma, c=args.cheng_c,
+                            stage2_epochs=args.cheng_stage2_epochs, stage2_lr=args.cheng_stage2_lr,
+                            momentum=args.cheng_momentum, alpha=args.cheng_alpha,
+                        )
+                        if not SELECTIVE_UNLEARNING:
+                            readouts[unlearn_type][data_name] = all_readouts(model_cheng, test_loader, final_forget_loader, final_remain_loader, name='ChengUnlearn', seed=seed)
+                        else:
+                            readouts[unlearn_type][data_name][str(percentage)] = all_readouts(model_cheng, test_loader, final_forget_loader, final_remain_loader, name='ChengUnlearn', seed=seed)
 
                 elif unlearn_type == 'scrub':
                     print("Forgetting by SCRUB:")
