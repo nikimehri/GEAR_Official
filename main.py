@@ -165,7 +165,8 @@ def main(args):
         if args.run_sota:
             print('RUNNING GEAR UNLEARNING (evaluated against the test set)')
             save_me = args.name + '_SOTA'
-            unlearn_model_sota, forget_acc_sota, remain_acc_sota, unlearning_time, _, _, _, _, _ = gear.gear(
+            unlearn_model_sota, forget_acc_sota, remain_acc_sota, unlearning_time, test_acc_sota, mia_score_sota, \
+                retain_adjacent_acc_sota, retain_remote_acc_sota, ain_score_sota = gear.gear(
                 ori_model, train_forget_loader, trainset, testset, test_loader, device,
                 test_metadata=test_dict, train_metadata=train_dict, output_name=save_me,
                 **gear_kwargs
@@ -176,13 +177,23 @@ def main(args):
 
             print(f'SOTA UNLEARNING TIME forgetting {num_forget} SAMPLES: {unlearning_time}')
 
-            # Update the CSV file with the SOTA results
+            # Update the CSV file with the SOTA results. Retain Remote/Adjacent
+            # Acc, Test Acc, MIA, and AIN share column names with the
+            # --specific_settings row below (not suffixed "SOTA") - each mode
+            # writes its own row immediately after computing these values, so
+            # the two rows never cross-contaminate; which row is which is
+            # distinguishable via 'Forget Acc SOTA' vs. 'Forget Acc' being set.
             with open(output_file_name, 'a', newline='') as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=csv_columns)
                 row_data['Forget Acc SOTA'] = forget_acc_sota.detach().item()
                 row_data['Remain Acc SOTA'] = remain_acc_sota.detach().item()
                 row_data['Unlearning Time'] = unlearning_time
                 row_data['Per Class Accuracies SOTA'] = json.dumps(per_class_accs_sota)
+                row_data['Retain Remote Acc'] = retain_remote_acc_sota
+                row_data['Retain Adjacent Acc'] = retain_adjacent_acc_sota
+                row_data['Test Acc'] = test_acc_sota.detach().item() if isinstance(test_acc_sota, torch.Tensor) else test_acc_sota
+                row_data['MIA'] = mia_score_sota
+                row_data['AIN'] = ain_score_sota
                 writer.writerow(row_data)
 
 
