@@ -159,6 +159,10 @@ if __name__ == '__main__':
                         help='Batch size for data loaders')
     parser.add_argument('--gpu_id', type=int, default=0,
                         help='GPU index to use')
+    parser.add_argument('--seed', type=int, default=2022,
+                        help='Seeds NumPy/PyTorch/CUDA globally and is passed to every '
+                             "all_readouts() call (MIA's cross-validation split, AIN's cache key). "
+                             'Vary this across runs for genuinely independent stochastic replicates.')
     parser.add_argument('--name', type=str, default='baseline',
                         help='Experiment name prefix for output files')
     parser.add_argument('--method', type=str, default='scrub',
@@ -275,7 +279,7 @@ if __name__ == '__main__':
 
     BASELINE_DIR = f'{MODEL_CHECKPOINT_ROOT}/baseline_models'
 
-    seed = 2022
+    seed = args.seed
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)

@@ -22,7 +22,14 @@ def main(args):
     (--run_sota) and/or once against the validation set (--specific_settings),
     logging results to CSV after each stage."""
     torch.cuda.empty_cache()
-    seed_torch()
+    # Was seed_torch() with no argument, which always used seed_torch's own
+    # default (2022) regardless of --seed - meaning weight init, dropout,
+    # augmentation, and GEAR's own training stochasticity never actually
+    # varied across --seed values, only the train/val split did (that part
+    # uses its own independent torch.Generator, seeded from args.seed
+    # separately, below). Passing args.seed here is what makes --seed
+    # actually control every source of randomness, not just the split.
+    seed_torch(args.seed)
 
     csv_columns, output_file_name = set_up_save(args, args.name)
     # Shared across every sweep invocation of this script (e.g. multiple
