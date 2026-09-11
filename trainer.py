@@ -163,13 +163,23 @@ def train_save_model(train_loader, val_loader, model_name, optim_name, learning_
         model = nn.DataParallel(model)
         model.to(device)
 
+    elif model_name == 'distilbert':
+        # Text, not vision - kept in its own module (text_models.py) and
+        # imported lazily right here, not at this file's top, so a machine
+        # without `transformers` installed never sees an ImportError when
+        # training any of the vision model_name branches above.
+        from text_models import TextTransformer
+        model = TextTransformer(num_classes=num_classes)
+        model = nn.DataParallel(model)
+        model.to(device)
+
     else:
         raise ValueError(f"Unknown model_name: '{model_name}'")
 
 
     criterion = loss_picker('cross', train_loader=train_loader, device=device, forget_class=forget_class, num_classes=num_classes)
     optimizer = optimizer_picker(optim_name, model.parameters(), lr=learning_rate, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs) if model_name in ('resnet', 'resnet50', 'vit') else None
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs) if model_name in ('resnet', 'resnet50', 'vit', 'distilbert') else None
 
     best_acc = 0
 

@@ -166,6 +166,18 @@ def get_dataset(data_name, path='./data', model_name=None):
         dataset = datasets.ImageFolder(val_dir, transform=transforms.Compose([transforms.ToTensor()]))
         return trainset, testset, dataset
 
+    elif data_name == '20newsgroups':
+        # Text, not vision - kept in its own module (text_data.py) and
+        # imported lazily right here, not at this file's top, so a machine
+        # without scikit-learn/transformers installed never sees an
+        # ImportError for any of the vision data_name branches above. Only
+        # ever pairs with --model_name distilbert (see params.py's
+        # VALID_PAIRINGS), so unlike cifar100/tinyimagenet's model_name
+        # branching above, there's nothing to vary here based on it - the
+        # tokenizer checkpoint is get_20newsgroups_datasets' own default.
+        from text_data import get_20newsgroups_datasets
+        return get_20newsgroups_datasets(path=path)
+
     elif data_name == 'svhn':
         # SVHN has 3 channels and 32x32 images
         train_transform = transforms.Compose([

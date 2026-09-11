@@ -62,6 +62,8 @@ def set_num_classes(data_name, dataset):
         num_classes = 100
     elif data_name == 'tinyimagenet':
         num_classes = 200
+    elif data_name == '20newsgroups':
+        num_classes = 20
     else:
         num_classes = 10
 
@@ -568,6 +570,14 @@ def get_dataset(data_name, path='./data', model_name=None):
         testset = datasets.ImageFolder(val_dir, transform=test_transform)
         dataset = datasets.ImageFolder(val_dir, transform=transforms.Compose([transforms.ToTensor()]))
         return trainset, testset, dataset
+
+    elif data_name == '20newsgroups':
+        # Text, not vision - kept in its own module (text_data.py) and
+        # imported lazily right here so a machine without scikit-learn/
+        # transformers installed never sees an ImportError for any vision
+        # data_name. Only ever pairs with --model_name distilbert.
+        from text_data import get_20newsgroups_datasets
+        return get_20newsgroups_datasets(path=path)
 
     elif data_name == 'fashionmnist':
         train_transform = transforms.Compose([

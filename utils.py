@@ -120,6 +120,8 @@ def set_num_classes(args, dataset):
         num_classes = 100
     elif args.data_name == 'tinyimagenet':
         num_classes = 200
+    elif args.data_name == '20newsgroups':
+        num_classes = 20
     else:
         num_classes = 10
 
