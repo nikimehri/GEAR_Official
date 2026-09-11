@@ -89,7 +89,9 @@ def get_parameters():
 
     parser.add_argument('--target_layer', type=str, default='9',
                         help='Layer for contrastive loss. Use "9" for AllCNN, "layer4" for ResNet-50, '
-                             '"all" for multi-layer (layer1+layer2+layer3+layer4) on ResNet-50.')
+                             '"all" for multi-layer (layer1+layer2+layer3+layer4) on ResNet-50, '
+                             'or a 0-indexed transformer block number for ViT/DistilBERT '
+                             '(e.g. "11" for ViT-Base\'s last block, "5" for DistilBERT\'s last block).')
 
     # random seed for reproducibility across runs
     parser.add_argument('--seed', type=int, default=42,
