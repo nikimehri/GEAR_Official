@@ -32,17 +32,29 @@ from the retain distribution.
   clinical pipeline reuses the same class with a different patch/image-size
   config), all exposing a `forward_with_features`/`get_embedding` hook API
   that `gear.py`'s contrastive losses depend on.
-- `class_hierarchy.py` — the CIFAR-100 (official) and TinyImageNet
-  (WordNet-hypernym-derived approximation) class-superclass tables used to
-  compute Retain Adjacent/Remote Accuracy, shared by `gear.py` and every
+- `text_models.py`, `text_data.py` — the text-modality addition: `TextTransformer`
+  (a DistilBERT encoder + classification head) and `TextClassificationDataset`
+  (20 Newsgroups, tokenized once at construction). Kept in their own modules,
+  separate from `models.py`/`make_dataloaders.py`, and `transformers`/`sklearn`'s
+  `fetch_20newsgroups` are imported lazily so nothing about the vision
+  pipeline changes for a machine that hasn't installed them. Text batches are
+  packed into an ordinary `[B, 2, seq_len]` tensor (input_ids + attention_mask
+  stacked), so every shared function that expects "a tensor `x`,
+  `model(x)` returns logits" — `gear.py`'s losses, every baseline,
+  `trainer.py`, `class_hierarchy.py`, `ain_metric.py` — works unmodified.
+- `class_hierarchy.py` — the CIFAR-100 (official), TinyImageNet
+  (WordNet-hypernym-derived approximation), and 20 Newsgroups (standard
+  6-supercategory grouping, verified against `sklearn`'s live `target_names`
+  via `scripts/build_20newsgroups_hierarchy.py`) class-superclass tables used
+  to compute Retain Adjacent/Remote Accuracy, shared by `gear.py` and every
   baseline rather than duplicated.
 - `ain_metric.py` — the Anamnesis Index (AIN) implementation ("relearn
   time" fine-tuning + ratio against a gold-standard retrain model), also
   shared by `gear.py` and the baselines.
-- `make_dataloaders.py` — dataset loading (including TinyImageNet) and
-  forget/remain split construction, for both class-based forgetting and
-  metadata-attribute-based forgetting (clinical device/diagnosis/exam-year
-  attributes).
+- `make_dataloaders.py` — dataset loading (including TinyImageNet and
+  20 Newsgroups) and forget/remain split construction, for both class-based
+  forgetting and metadata-attribute-based forgetting (clinical
+  device/diagnosis/exam-year attributes).
 - `trainer.py` — model construction, the training loop, and checkpoint
   loading/saving.
 - `params.py`, `utils.py` — CLI argument parsing and small shared helpers.
@@ -50,9 +62,9 @@ from the retain distribution.
   plots, an experimental classifier-splicing side-experiment).
 - `compute_initial_es.py`, `evaluate_retrain.py` — standalone diagnostic
   scripts (see [Diagnostics](#diagnostics) below).
-- `scripts/prepare_tinyimagenet.py`, `scripts/build_tinyimagenet_hierarchy.py`
-  — one-time TinyImageNet setup scripts (see
-  [Dataset Preparation](#dataset-preparation) below).
+- `scripts/prepare_tinyimagenet.py`, `scripts/build_tinyimagenet_hierarchy.py`,
+  `scripts/build_20newsgroups_hierarchy.py` — one-time dataset setup scripts
+  (see [Dataset Preparation](#dataset-preparation) below).
 
 **Baselines** (`baselines/`): independent implementations of every
 comparison method, dispatched through `baselines/baseline_main.py` — see
@@ -87,6 +99,9 @@ one manual step first — see [Dataset Preparation](#dataset-preparation)
 below. `nltk` is listed in `requirements.txt` but is a one-time/dev
 dependency only — it's needed to *regenerate*
 `class_hierarchy.py`'s TinyImageNet mapping, not to run experiments.
+20 Newsgroups downloads automatically via `scikit-learn` on first use, and
+`--model_name distilbert` downloads pretrained weights from Hugging Face Hub
+via `transformers` on first use.
 
 ## Dataset Preparation
 
@@ -116,6 +131,18 @@ python scripts/build_tinyimagenet_hierarchy.py --dataset_dir ./data
 The resulting table is already committed in `class_hierarchy.py`
 (`TINYIMAGENET_SUPERCLASS_MAPPING`) — you only need to re-run this script if
 you want to regenerate it (e.g. with a different grouping granularity).
+
+**20 Newsgroups** needs no manual download step — `--data_name 20newsgroups`
+fetches it automatically via `sklearn.datasets.fetch_20newsgroups` on first
+use (headers/footers/quotes stripped, to avoid the classifier trivially
+keying off metadata rather than content). Its class-superclass table
+(`TWENTYNEWSGROUPS_SUPERCLASS_MAPPING` in `class_hierarchy.py`) is the
+standard 6-supercategory grouping (computers, forsale, politics, recreation,
+religion, science) and is already committed; re-derive/verify it via:
+
+```bash
+python scripts/build_20newsgroups_hierarchy.py
+```
 
 ## Quick Start
 
@@ -169,13 +196,36 @@ This mode requires the clinical metadata CSVs described in
 [Data and Model Availability](#data-and-model-availability) — it won't run
 without them.
 
+**4. Text-modality unlearning** (20 Newsgroups/DistilBERT): the same
+class-based forgetting workflow as step 1-2, just with a text
+dataset/backbone. Fine-tuning a pretrained transformer wants `--optim_name
+adam` and a much smaller `--lr` than the vision defaults (AllCNN/ResNet are
+typically trained from scratch with SGD at `lr=0.01`; DistilBERT is
+pretrained, so a large LR will wreck it) — `2e-5`-`5e-5` is a reasonable
+starting range, and a handful of epochs is usually enough:
+
+```bash
+python main.py --forget_class 0 \
+               --data_name 20newsgroups \
+               --model_name distilbert \
+               --optim_name adam \
+               --lr 2e-5 \
+               --epoch 3 \
+               --batch_size 16 \
+               --gpu_id 0 \
+               --train
+```
+
+Then run GEAR unlearning against that checkpoint pair exactly as in step 2,
+with `--target_layer` set to a DistilBERT block index (`5` = last block).
+
 ## CLI Reference (`main.py`)
 
 **Dataset / model**
 | Flag | Meaning |
 |---|---|
-| `--data_name` | `cifar10`, `cifar100`, `tinyimagenet`, `fashionmnist`, `svhn`, `medmnist`, or a clinical dataset name |
-| `--model_name` | `AllCNN`, `resnet`, `resnet50`, or `vit`. `cifar10`/`fashionmnist` require `AllCNN`; `cifar100`/`tinyimagenet` require `resnet`/`resnet50`/`vit`. `vit` resizes inputs to 224x224 with ImageNet normalization automatically (see `models.ViT`) |
+| `--data_name` | `cifar10`, `cifar100`, `tinyimagenet`, `20newsgroups`, `fashionmnist`, `svhn`, `medmnist`, or a clinical dataset name |
+| `--model_name` | `AllCNN`, `resnet`, `resnet50`, `vit`, or `distilbert`. `cifar10`/`fashionmnist` require `AllCNN`; `cifar100`/`tinyimagenet` require `resnet`/`resnet50`/`vit`; `20newsgroups` requires `distilbert`. `vit` resizes inputs to 224x224 with ImageNet normalization automatically (see `models.ViT`); `distilbert` is the only text-modality pairing — see `text_models.py`/`text_data.py` |
 | `--dataset_dir`, `--checkpoint_dir` | where data downloads to / checkpoints save to |
 | `--val_fraction` | fraction of the training set held out for validation (default 0.1) |
 | `--seed` | Seeds NumPy/PyTorch/CUDA globally (weight init, dropout, augmentation, training stochasticity) and the train/val split generator - vary this for genuinely independent multi-seed replicates |
@@ -207,7 +257,7 @@ without them.
 | `--forget_forget_weight` | weight on pulling forget samples together with each other |
 | `--gamma_rep` | overall scale on the combined contrastive loss |
 | `--remain_reg` | weight on the plain retain cross-entropy loss |
-| `--target_layer` | which layer to compute features at: `9` for AllCNN, `layer4` for ResNet-50, `all` for all four ResNet stages |
+| `--target_layer` | which layer to compute features at: `9` for AllCNN, `layer4` for ResNet-50, `all` for all four ResNet stages, or a 0-indexed transformer block number for ViT/DistilBERT (e.g. `11` for ViT-Base's last block, `5` for DistilBERT's last block) |
 | `--use_entanglement_weighting` | weight the retain-forget push per-sample by each forget sample's entanglement score |
 | `--centroid_refresh_interval` | training steps between retain-centroid recomputation when `--centroid_mode dynamic` (default: once per epoch) |
 | `--centroid_mode` | `dynamic` (default) recomputes retain centroids periodically as the model's representations shift during unlearning; `cached` computes them once and freezes them for the run ("GEAR-dynamic" vs. "GEAR-cached"). Only meaningful alongside `--use_entanglement_weighting` |
@@ -254,13 +304,13 @@ python baselines/baseline_main.py \
 - `scrub` — knowledge-distillation baseline (alternating maximize/minimize passes against a frozen teacher); pass `--feature_contrastive`/`--use_entanglement_weighting`/`--retain_forget_weight`/etc. (same meaning as `main.py`'s) to run SCRUB with GEAR's contrastive/entanglement regularizer for a head-to-head comparison under matching settings, or `--scrub_epochs` to control training length
 - `delete` — DELETE (Decoupled Distillation to Erase, CVPR 2025): trains a copy of the model on the forget set only, distilling toward the frozen original model's own predictions with each sample's true-label logit masked out before softmax. No retain-set loss term. `--delete_epochs`/`--delete_lr`/`--delete_disable_bn` tune it. Reimplemented from the paper's description — the [reference repo](https://github.com/shaaaaron/DELETE) ships with no LICENSE file, so this is a clean reimplementation, not a code port
 - `ssd` — SSD (Selective Synaptic Dampening, AAAI 2024): no training loop at all — computes per-parameter Fisher information on the forget set and on the full original trainset, then dampens (in place) any parameter disproportionately important to the forget set. `--ssd_dampening_constant`/`--ssd_selection_weighting` tune it (selection_weighting defaults to 5 for ViT, 10 otherwise, matching the reference's own architecture-aware default). Adapted from the [reference repo](https://github.com/if-loops/selective-synaptic-dampening) (MIT licensed)
-- `coun` — CoUn (retain-only, self-supervised contrastive baseline, Khalil et al. 2025; see `baselines/coun.py`'s module docstring). `--coun_epochs`/`--coun_lr`/`--coun_lambda_scale`/`--coun_temp` tune it — fixed here, not swept (see the standalone CLI below for the hyperparameter sweep)
+- `coun` — CoUn (retain-only, self-supervised contrastive baseline, Khalil et al. 2025; see `baselines/coun.py`'s module docstring). `--coun_epochs`/`--coun_lr`/`--coun_lambda_scale`/`--coun_temp` tune it — fixed here, not swept (see the standalone CLI below for the hyperparameter sweep). **Not applicable to `20newsgroups`/`distilbert`** — its core update relies on SimCLR-style image augmentations (random crop/color-jitter/grayscale), which don't apply to tokenized text; it logs a message and skips rather than erroring
 - `cu` — CU (Contrastive Unlearning, Lee et al. 2024, [arXiv:2401.10458](https://arxiv.org/abs/2401.10458) — **not the same paper as `coun` above**, despite the similar name): a "reversed" InfoNCE-style contrastive loss operating directly on each model's `get_embedding(x)` output (no hooked intermediate layer, so it's architecture-agnostic with no per-model special-casing at all) — pushes each forget sample's embedding away from same-class retain embeddings and toward different-class ones, combined with a plain retain-set cross-entropy term. No frozen reference/teacher or retrain/gold model needed. `--cu_epochs`/`--cu_lr`/`--cu_temp`/`--cu_lambda_ul`/`--cu_lambda_ce`/`--cu_omega` tune it. The paper doesn't state numeric hyperparameter values, so the defaults are this reimplementation's own reasonable choices, documented as such in `baselines/cu.py`
 - `eval_orig` — not an unlearning method: evaluates `--retrain_model` itself (reported as "Retrain") through the same `all_readouts()` every other method uses. Useful as a gold-standard reference row — its Retain Adjacent/Remote Accuracy is the practical ceiling other methods are compared against, and its AIN (retrain evaluated against itself as both the "unlearned" and gold-standard model) should land at ≈1.0, a sanity check that AIN is calibrated correctly
 - `cheng_unlearn` — the unlearning method from Cheng et al., "Machine Unlearning under Retain-Forget Entanglement" ([arXiv:2603.26569](https://arxiv.org/abs/2603.26569)) — the same paper Retain Adjacent/Remote Accuracy itself comes from, so this is a natural comparison point, though its own score on that metric has a built-in home-field advantage (its loss function directly targets the quantity the metric measures — see `baselines/cheng_unlearn.py`'s docstring). Two stages: an augmented-Lagrangian pass that pushes up forget-set loss while constraining mean loss on the retain-**remote** split to stay near the original model's value, then a Wasserstein-2-regularized fine-tuning pass where the retain-**adjacent** gradient is projected orthogonal to the forget/remote gradients before being applied. **Only runs on datasets with a known class hierarchy (`cifar100`/`tinyimagenet`, not `cifar10`)** — unlike every other baseline, it needs the Retain Adjacent/Remote split as an actual training input, not just an evaluation metric, so there's nothing for it to do on `cifar10`; it logs a message and skips rather than erroring. `--cheng_stage1_epochs`/`--cheng_stage1_lr`/`--cheng_mu`/`--cheng_gamma`/`--cheng_c`/`--cheng_stage2_epochs`/`--cheng_stage2_lr`/`--cheng_momentum`/`--cheng_alpha` tune it. Reimplemented from the paper's equations and reference-code structure (no LICENSE file upstream, and the exact Stage 2 gradient-combination rule wasn't independently verified against the reference code — documented as a best-effort reading in the module docstring, not a guaranteed-exact match). The most compute-expensive baseline in this repo (two training stages, and Stage 2 computes three separate backward passes per step) — optional to run
 
 Every baseline also reports Retain Adjacent/Remote Accuracy (`'N/A'` unless
-`--data_name` is `cifar100`/`tinyimagenet`) automatically, and AIN when
+`--data_name` is `cifar100`/`tinyimagenet`/`20newsgroups`) automatically, and AIN when
 `--compute_ain` is passed (plus `--ain_error_range`/`--ain_lr`/
 `--ain_max_epochs`/`--ain_eval_interval` to tune it — same meaning and
 defaults as `main.py`'s flags of the same name) — both computed once per
@@ -298,21 +348,23 @@ Accuracy automatically (`'N/A'` unless `--data_name` is
 
 ### Baseline / configuration compatibility
 
-Every baseline listed above except `cheng_unlearn` works across all 6
+Every baseline listed above except `cheng_unlearn`/`coun` works across all 7
 supported model/dataset configurations. `cheng_unlearn` needs a known class
 hierarchy as a training input (see above), so it's inherently inapplicable
-to `cifar10` — not a portability gap, a property of the algorithm itself:
+to `cifar10` (which has none); `coun`'s core update needs image-specific
+SimCLR augmentations, so it's inherently inapplicable to `20newsgroups` —
+neither is a portability gap, both are properties of the algorithms themselves:
 
-| | CIFAR-10/AllCNN | CIFAR-100/AllCNN | CIFAR-100/ResNet50 | TinyImageNet/ResNet50 | CIFAR-100/ViT | TinyImageNet/ViT |
-|---|---|---|---|---|---|---|
-| finetune / neggrad | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| cfk / euk | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| scrub | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| delete | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| ssd | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| coun | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| cu | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| cheng_unlearn | N/A | ✅ | ✅ | ✅ | ✅ | ✅ |
+| | CIFAR-10/AllCNN | CIFAR-100/AllCNN | CIFAR-100/ResNet50 | TinyImageNet/ResNet50 | CIFAR-100/ViT | TinyImageNet/ViT | 20 Newsgroups/DistilBERT |
+|---|---|---|---|---|---|---|---|
+| finetune / neggrad | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| cfk / euk | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| scrub | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| delete | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| ssd | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| coun | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | N/A |
+| cu | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| cheng_unlearn | N/A | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 `finetune`/`neggrad`/`delete`/`ssd` are architecture-agnostic by
 construction (they only ever touch `model.parameters()`/`model(x)`). `cu`
@@ -322,16 +374,17 @@ intermediate layer, so unlike `cfk`/`euk`/`coun` it needs no per-architecture
 "which layer" resolution at all. `cfk`/`euk`/`coun` each resolve a "last
 representational block" per architecture (`--target_layer`-style
 convention: `features[9]` for AllCNN, `resnet_base.layer4` for ResNet,
-`vit.blocks[-1]` for ViT). `scrub`'s core distillation loop is
-architecture-agnostic; its optional
-`--feature_contrastive`/`--use_entanglement_weighting` CL+ES mode needs
-`--target_layer` set correctly for whichever architecture is in play, same
-as `main.py`'s GEAR runs. `chen`/`ravi` (sweep-mode only) are pre-baked
+`vit.blocks[-1]` for ViT, `encoder.transformer.layer[-1]` for DistilBERT —
+`coun` itself stops at ViT, since it has no config that needs a DistilBERT
+branch). `scrub`'s core distillation loop is architecture-agnostic; its
+optional `--feature_contrastive`/`--use_entanglement_weighting` CL+ES mode
+needs `--target_layer` set correctly for whichever architecture is in play,
+same as `main.py`'s GEAR runs. `chen`/`ravi` (sweep-mode only) are pre-baked
 comparison checkpoints specific to the clinical datasets, not general
 unlearning methods — out of scope for this matrix. `eval_orig` (available in
 both modes) isn't an unlearning method either — it evaluates `--retrain_model`
 itself as a gold-standard reference row (see above) — but works across all
-6 configs the same way every other method does, since it just runs whatever
+7 configs the same way every other method does, since it just runs whatever
 checkpoint it's given through `all_readouts()`.
 
 ## Diagnostics
@@ -345,15 +398,20 @@ checkpoint it's given through `all_readouts()`.
 ## Known Issues
 
 - Retain Adjacent/Remote Accuracy and AIN are only computed for
-  `--data_name cifar100`/`tinyimagenet` (Retain Adjacent/Remote Accuracy) or
-  when a `--retrain_model`/`--retrain_checkpoint` is available (AIN) —
-  every other case reports `'N/A'` rather than an error.
+  `--data_name cifar100`/`tinyimagenet`/`20newsgroups` (Retain
+  Adjacent/Remote Accuracy) or when a `--retrain_model`/`--retrain_checkpoint`
+  is available (AIN) — every other case reports `'N/A'` rather than an error.
 - TinyImageNet has no official class-superclass table (unlike CIFAR-100), so
   its Retain Adjacent/Remote Accuracy grouping (`class_hierarchy.py`'s
   `TINYIMAGENET_SUPERCLASS_MAPPING`) is a WordNet-hypernym-based
   approximation, not an authoritative reproduction of anything the reference
   paper published — see `scripts/build_tinyimagenet_hierarchy.py`'s
-  docstring for the exact algorithm.
+  docstring for the exact algorithm. 20 Newsgroups' grouping
+  (`TWENTYNEWSGROUPS_SUPERCLASS_MAPPING`) is the standard, widely-used
+  6-supercategory grouping by topic, not an approximation.
+- `coun` is not applicable to `20newsgroups`/`distilbert` (SimCLR-style
+  image augmentations don't apply to text) — it logs a message and skips
+  rather than erroring, same treatment as `cheng_unlearn` on `cifar10`.
 - `--run_sota` doesn't report Retain Adjacent/Remote Accuracy or AIN (only
   `--specific_settings` does) — both were added to match what the
   validation-set evaluation path already tracked.
