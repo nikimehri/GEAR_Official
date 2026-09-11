@@ -7,7 +7,7 @@ from neggrad import *
 from finetune import finetune
 from delete import delete_unlearn
 from ssd import ssd_unlearn
-from coun import get_coun_datasets, coun_unlearn
+from coun import get_coun_datasets, coun_unlearn, COUN_VALID_PAIRINGS
 from cu import cu_unlearn
 from cheng_unlearn import cheng_unlearn
 from baseline_utils import *
@@ -401,16 +401,21 @@ if __name__ == '__main__':
                 )
                 readouts[unlearn_type][data_name] = all_readouts(model_ssd, test_loader, final_forget_loader, final_remain_loader, name='SSD', seed=seed)
             elif unlearn_type == 'coun':
-                print("Forgetting by CoUn:")
-                _, _, trainset_coun_raw = get_coun_datasets(data_name, model_type, data_path)
-                train_remain_loader_raw = DataLoader(trainset_coun_raw, batch_size=batch_size,
-                                                     sampler=SubsetRandomSampler(train_remain_index))
-                model_coun = coun_unlearn(
-                    model, model_type, data_name, train_remain_loader_raw, device,
-                    lambda_scale=args.coun_lambda_scale, temp=args.coun_temp,
-                    epochs=args.coun_epochs, lr=args.coun_lr,
-                )
-                readouts[unlearn_type][data_name] = all_readouts(model_coun, test_loader, final_forget_loader, final_remain_loader, name='CoUn', seed=seed)
+                if model_type not in COUN_VALID_PAIRINGS.get(data_name, []):
+                    print(f"[coun] Not applicable to data_name='{data_name}'/model_name='{model_type}' - "
+                          f"CoUn's core update uses SimCLR-style image augmentations, which don't apply to "
+                          f"text. Skipping.")
+                else:
+                    print("Forgetting by CoUn:")
+                    _, _, trainset_coun_raw = get_coun_datasets(data_name, model_type, data_path)
+                    train_remain_loader_raw = DataLoader(trainset_coun_raw, batch_size=batch_size,
+                                                         sampler=SubsetRandomSampler(train_remain_index))
+                    model_coun = coun_unlearn(
+                        model, model_type, data_name, train_remain_loader_raw, device,
+                        lambda_scale=args.coun_lambda_scale, temp=args.coun_temp,
+                        epochs=args.coun_epochs, lr=args.coun_lr,
+                    )
+                    readouts[unlearn_type][data_name] = all_readouts(model_coun, test_loader, final_forget_loader, final_remain_loader, name='CoUn', seed=seed)
             elif unlearn_type == 'cu':
                 print("Forgetting by CU:")
                 model_cu = cu_unlearn(
@@ -659,19 +664,24 @@ if __name__ == '__main__':
                         readouts[unlearn_type][data_name][str(percentage)] = all_readouts(model_ssd, test_loader, final_forget_loader, final_remain_loader, name='SSD', seed=seed)
 
                 elif unlearn_type == 'coun':
-                    print("Forgetting by CoUn:")
-                    _, _, trainset_coun_raw = get_coun_datasets(data_name, model_type, data_path)
-                    train_remain_loader_raw = DataLoader(trainset_coun_raw, batch_size=batch_size,
-                                                         sampler=SubsetRandomSampler(train_remain_index))
-                    model_coun = coun_unlearn(
-                        model, model_type, data_name, train_remain_loader_raw, device,
-                        lambda_scale=args.coun_lambda_scale, temp=args.coun_temp,
-                        epochs=args.coun_epochs, lr=args.coun_lr,
-                    )
-                    if not SELECTIVE_UNLEARNING:
-                        readouts[unlearn_type][data_name] = all_readouts(model_coun, test_loader, final_forget_loader, final_remain_loader, name='CoUn', seed=seed)
+                    if model_type not in COUN_VALID_PAIRINGS.get(data_name, []):
+                        print(f"[coun] Not applicable to data_name='{data_name}'/model_name='{model_type}' - "
+                              f"CoUn's core update uses SimCLR-style image augmentations, which don't apply to "
+                              f"text. Skipping.")
                     else:
-                        readouts[unlearn_type][data_name][str(percentage)] = all_readouts(model_coun, test_loader, final_forget_loader, final_remain_loader, name='CoUn', seed=seed)
+                        print("Forgetting by CoUn:")
+                        _, _, trainset_coun_raw = get_coun_datasets(data_name, model_type, data_path)
+                        train_remain_loader_raw = DataLoader(trainset_coun_raw, batch_size=batch_size,
+                                                             sampler=SubsetRandomSampler(train_remain_index))
+                        model_coun = coun_unlearn(
+                            model, model_type, data_name, train_remain_loader_raw, device,
+                            lambda_scale=args.coun_lambda_scale, temp=args.coun_temp,
+                            epochs=args.coun_epochs, lr=args.coun_lr,
+                        )
+                        if not SELECTIVE_UNLEARNING:
+                            readouts[unlearn_type][data_name] = all_readouts(model_coun, test_loader, final_forget_loader, final_remain_loader, name='CoUn', seed=seed)
+                        else:
+                            readouts[unlearn_type][data_name][str(percentage)] = all_readouts(model_coun, test_loader, final_forget_loader, final_remain_loader, name='CoUn', seed=seed)
 
                 elif unlearn_type == 'cu':
                     print("Forgetting by CU:")

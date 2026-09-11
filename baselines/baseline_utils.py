@@ -702,6 +702,9 @@ def load_model(model_type, num_classes, data_name, n_channels=3, size=32, batch_
             model = ViT(num_classes=num_classes)
         else:
             model = ViT(num_classes=num_classes, timm_model_name='vit_base_patch16_224', img_size=512, patch_size=32)
+    elif model_type == 'distilbert':
+        from text_models import TextTransformer
+        model = TextTransformer(num_classes=num_classes)
     return model
 
 
