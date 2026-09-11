@@ -36,6 +36,12 @@ def cfk_unlearn(model_cfk, r_loader, model_name):
         for param in model_cfk.vit.blocks[-1].parameters():
             param.requires_grad_(True)
 
+    elif model_name == 'distilbert':
+        # Same "last representational block only" convention, DistilBERT's
+        # naming (self.encoder.transformer.layer, 6 blocks).
+        for param in model_cfk.encoder.transformer.layer[-1].parameters():
+            param.requires_grad_(True)
+
     else:
         raise NotImplementedError
 
@@ -139,6 +145,17 @@ def euk_unlearn(model, r_loader, model_name):
             model_euk.vit.blocks[-1].load_state_dict(model_initial.vit.blocks[-1].state_dict())
 
         for param in model_euk.vit.blocks[-1].parameters():
+            param.requires_grad_(True)
+
+    elif model_name == 'distilbert':
+        # Same reset-then-unfreeze pattern as vit above - DistilBERT's
+        # blocks are equally uniform, so one load_state_dict suffices.
+        with torch.no_grad():
+            model_euk.encoder.transformer.layer[-1].load_state_dict(
+                model_initial.encoder.transformer.layer[-1].state_dict()
+            )
+
+        for param in model_euk.encoder.transformer.layer[-1].parameters():
             param.requires_grad_(True)
 
     else:
