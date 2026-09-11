@@ -34,7 +34,7 @@ reasonable choices, documented as such rather than claimed as the paper's.
 
 Because the loss operates on each model's own get_embedding(x) (the raw
 pooled pre-classifier representation) rather than a hooked intermediate
-layer, this works unmodified across AllCNN/CustomResNet/ViT - no
+layer, this works unmodified across AllCNN/CustomResNet/ViT/DistilBERT - no
 per-architecture branching needed, unlike cfk/euk/coun.
 """
 import copy

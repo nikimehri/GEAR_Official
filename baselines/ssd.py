@@ -93,11 +93,12 @@ def ssd_unlearn(model, forget_loader, full_train_loader, device,
                  dampening_constant=1.0, selection_weighting=None, model_name=None):
     """Returns a new, dampened copy of model (model itself is untouched).
 
-    selection_weighting=None resolves to 5.0 for ViT, 10.0 otherwise -
-    matching the reference implementation's own architecture-aware default
-    (their model_size_scaler halves alpha for transformers)."""
+    selection_weighting=None resolves to 5.0 for transformer architectures
+    (ViT, DistilBERT), 10.0 otherwise - matching the reference
+    implementation's own architecture-aware default (their
+    model_size_scaler halves alpha for transformers)."""
     if selection_weighting is None:
-        selection_weighting = 5.0 if model_name == 'vit' else 10.0
+        selection_weighting = 5.0 if model_name in ('vit', 'distilbert') else 10.0
 
     unlearned_model = copy.deepcopy(model).to(device)
     perturber = ParameterPerturber(unlearned_model, device)
