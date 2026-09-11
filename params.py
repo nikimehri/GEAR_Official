@@ -10,12 +10,12 @@ def get_parameters():
     parser = argparse.ArgumentParser("GEAR Unlearning (contrastive loss + entanglement-score weighting)")
 
     # which dataset to use
-    parser.add_argument('--data_name', type=str, default='cifar10', choices=['cifar10', 'cifar100', 'tinyimagenet', 'open_source', 'fundus_3_class', 'oct_4_class', 'oculoplastic',\
+    parser.add_argument('--data_name', type=str, default='cifar10', choices=['cifar10', 'cifar100', 'tinyimagenet', '20newsgroups', 'open_source', 'fundus_3_class', 'oct_4_class', 'oculoplastic',\
      'dr_grade', 'mri', 'ultrasound', 'cxr', 'svhn', 'fashionmnist', 'medmnist'],
-                        help='dataset, e.g. cifar10, cifar100, tinyimagenet, fashionmnist')
+                        help='dataset, e.g. cifar10, cifar100, tinyimagenet, 20newsgroups, fashionmnist')
 
     # Which model to use
-    parser.add_argument('--model_name', type=str, default='AllCNN', choices=['AllCNN', 'resnet', 'resnet50', 'vit'], help='model name')
+    parser.add_argument('--model_name', type=str, default='AllCNN', choices=['AllCNN', 'resnet', 'resnet50', 'vit', 'distilbert'], help='model name')
 
     # Model settings
     parser.add_argument('--optim_name', type=str, default='sgd', choices=['sgd', 'adam'], help='optimizer name')
@@ -155,6 +155,7 @@ def get_parameters():
         'cifar100':     ['AllCNN', 'resnet', 'resnet50', 'vit'],
         'fashionmnist': ['AllCNN'],
         'tinyimagenet': ['resnet', 'resnet50', 'vit'],
+        '20newsgroups': ['distilbert'],
     }
     if args.data_name in VALID_PAIRINGS:
         allowed = VALID_PAIRINGS[args.data_name]
