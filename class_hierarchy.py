@@ -73,6 +73,19 @@ TINYIMAGENET_SUPERCLASS_MAPPING = [
 ]
 
 
+# 20 Newsgroups' standard 6-supercategory grouping by topic (fine label
+# index -> coarse label index), in sklearn.datasets.fetch_20newsgroups's own
+# target_names ordering. Unlike TinyImageNet, this is a well-known, widely
+# documented grouping (not an approximation this repo invented) - generated
+# and verified against the live target_names ordering by
+# scripts/build_20newsgroups_hierarchy.py. Groups (alphabetical, matching
+# index order below): computers(5)/forsale(1)/politics(3)/recreation(4)/
+# religion(3)/science(4).
+TWENTYNEWSGROUPS_SUPERCLASS_MAPPING = [
+    4, 0, 0, 0, 0, 0, 1, 3, 3, 3, 3, 5, 5, 5, 5, 4, 2, 2, 2, 4,
+]
+
+
 def _get_superclass_mapping(data_name):
     """Returns the fine-label -> coarse-label list for a dataset, or None if
     no hierarchy is known for it - signals "not applicable" to callers,
@@ -81,6 +94,8 @@ def _get_superclass_mapping(data_name):
         return CIFAR100_SUPERCLASS_MAPPING
     if data_name == 'tinyimagenet':
         return TINYIMAGENET_SUPERCLASS_MAPPING
+    if data_name == '20newsgroups':
+        return TWENTYNEWSGROUPS_SUPERCLASS_MAPPING
     return None
 
 
