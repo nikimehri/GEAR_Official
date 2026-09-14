@@ -61,13 +61,23 @@ def normalize_rows(x, eps=1e-8):
     return x / (x.norm(dim=1, keepdim=True) + eps)
 
 
-def retain_alignment_loss(current_feats, ref_feats):
+def retain_alignment_loss(current_feats, ref_feats, entanglement_weights=None):
     """1 - mean cosine similarity to the frozen reference (original) model's
     features at the same layer. Penalizes retain-set representations for
-    drifting away from where the pristine original model put them."""
+    drifting away from where the pristine original model put them.
+
+    entanglement_weights, when given, is a [N] per-retain-sample multiplier
+    (see compute_retain_entanglement_scores): retain samples that currently
+    sit close to the forget class - i.e. the semantically adjacent ones most
+    at risk of collateral damage - get their drift penalized harder, so the
+    unlearning update preferentially protects them. Without it every retain
+    sample is weighted equally (the original, symmetric behavior)."""
     current_feats = normalize_rows(current_feats)
     ref_feats = normalize_rows(ref_feats)
-    return 1 - (current_feats * ref_feats).sum(dim=1).mean()
+    per_sample = 1 - (current_feats * ref_feats).sum(dim=1)  # [N]
+    if entanglement_weights is not None:
+        return (per_sample * entanglement_weights).mean()
+    return per_sample.mean()
 
 
 def retain_forget_loss(retain_feats, forget_feats, entanglement_scores=None):
@@ -86,17 +96,34 @@ def retain_forget_loss(retain_feats, forget_feats, entanglement_scores=None):
     return sim.mean()
 
 
-def forget_forget_loss(forget_feats):
-    """Negative mean pairwise cosine similarity among forget samples in the
-    batch (diagonal/self-similarity excluded). Since this is minimized, it
-    actually increases pairwise similarity — it pulls forget samples toward
-    a shared region of feature space, rather than dispersing them."""
+def forget_forget_loss(forget_feats, mode='attract'):
+    """Mean pairwise cosine similarity among forget samples in the batch
+    (diagonal/self-similarity excluded), signed per `mode`.
+
+    mode='attract' (default, the original behavior) returns the NEGATIVE mean
+    pairwise similarity, so minimizing it *increases* pairwise similarity -
+    pulling forget samples together into a shared region of feature space.
+
+    mode='disperse' returns the positive mean, so minimizing it *decreases*
+    pairwise similarity, scattering forget samples instead of clustering them.
+    The motivation: a tight, distinctive forget cluster is (a) an easy target
+    for a confidence-based membership-inference attacker, and (b) trivially
+    re-separable, which drives AIN below 1.0 (the signature of incomplete
+    unlearning) because the class structure survives intact and only its
+    label was moved. A retrain model - the gold standard both metrics are
+    defined against - does not cluster forget samples at all; it scatters
+    them into whichever retain classes they happen to resemble."""
     forget_feats = normalize_rows(forget_feats)
     sim = torch.einsum('md,nd->mn', forget_feats, forget_feats)
     upper = torch.triu(sim, diagonal=1)
     n = forget_feats.size(0)
     num_pairs = max(n * (n - 1) / 2, 1)
-    return -upper.sum() / num_pairs
+    mean_pairwise_sim = upper.sum() / num_pairs
+    if mode == 'disperse':
+        return mean_pairwise_sim
+    elif mode == 'attract':
+        return -mean_pairwise_sim
+    raise ValueError(f"forget_forget_mode must be 'attract' or 'disperse', got {mode!r}")
 
 
 def prepare_features(feat):
@@ -195,6 +222,41 @@ def compute_entanglement_scores(forget_feats_normed, centroids):
     sims = torch.mm(forget_feats_normed, centroids.t())  # [B_f, num_classes]
     e, _ = sims.max(dim=1)
     return e
+
+
+def compute_retain_entanglement_scores(retain_feats_normed, forget_feats_normed,
+                                        protection_strength=1.0):
+    """The mirror image of compute_entanglement_scores, for the retain side.
+
+    compute_entanglement_scores answers "how much does this FORGET sample
+    look like the retain distribution?" and is used to push the most
+    entangled forget samples hardest. This answers the complementary
+    question - "how much does this RETAIN sample look like the forget
+    class?" - and is used to protect the most entangled retain samples
+    hardest, since those are exactly the semantically adjacent ones that
+    take the collateral damage when the forget class is pushed away.
+
+    r_j = cos(z_j^r, mu^f), where mu^f is the current batch's L2-normalized
+    forget centroid. Returned as a per-sample multiplier for
+    retain_alignment_loss:
+
+        w_j = 1 + protection_strength * max(r_j, 0)
+
+    so an unentangled retain sample keeps weight 1.0 (unchanged from the
+    unweighted behavior) and a maximally entangled one gets up to
+    1 + protection_strength. Negative similarities are clamped to 0 rather
+    than allowed to *reduce* protection below baseline.
+
+    Args:
+        retain_feats_normed: [B_r, D] L2-normalized retain features
+        forget_feats_normed: [B_f, D] L2-normalized forget features
+        protection_strength: scales how much extra protection entanglement buys
+    Returns:
+        w: [B_r] per-retain-sample weight, each >= 1.0
+    """
+    forget_centroid = F.normalize(forget_feats_normed.mean(dim=0), p=2, dim=0)  # [D]
+    r = retain_feats_normed @ forget_centroid  # [B_r], in [-1, 1]
+    return 1.0 + protection_strength * r.clamp(min=0.0)
 
 
 # =============================================================================
@@ -439,6 +501,9 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
          feature_align_weight=0.0,
          retain_forget_weight=0.0,
          forget_forget_weight=0.0,
+         forget_forget_mode='attract',
+         retain_entanglement_protection=False,
+         retain_protection_strength=1.0,
          gamma_rep=1.0,
          target_layer=9,
          results_csv=None,
@@ -479,6 +544,22 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
     algorithm itself; when omitted (or when the dataset has no known class
     hierarchy), those two metrics are reported as 'N/A'.
 
+    forget_forget_mode ('attract' or 'disperse') controls the sign of the
+    forget-forget term - see forget_forget_loss. Defaults to 'attract', the
+    original behavior; 'disperse' scatters forget representations instead of
+    clustering them, targeting MIA and AIN (both defined against the retrain
+    model, which doesn't cluster forget samples either).
+
+    retain_entanglement_protection makes the entanglement weighting symmetric:
+    on top of scaling the forget-side push by each forget sample's
+    entanglement (use_entanglement_weighting), it scales the retain-side
+    alignment penalty by each *retain* sample's entanglement with the forget
+    class, so semantically adjacent retain classes - the ones that absorb the
+    collateral damage - are protected hardest. retain_protection_strength
+    scales how much extra protection that buys (see
+    compute_retain_entanglement_scores). Off by default; independent of
+    use_entanglement_weighting, though they're designed to be used together.
+
     centroid_mode ('dynamic' or 'cached', only meaningful when
     use_entanglement_weighting is set) controls how retain centroids behave
     over the run: 'dynamic' (default) recomputes them periodically, every
@@ -513,6 +594,10 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
 
     print(f'beta (remain_reg_param): {remain_reg_param} | gamma_rep: {gamma_rep}')
     print(f'retain_forget_weight: {retain_forget_weight} | forget_forget_weight: {forget_forget_weight}')
+    print(f'forget_forget_mode: {forget_forget_mode}')
+    print(f'retain_entanglement_protection: {retain_entanglement_protection}'
+          + (f' | retain_protection_strength: {retain_protection_strength}'
+             if retain_entanglement_protection else ''))
     print(f'target_layer: {target_layer}')
 
     # --- Entanglement-weighting setup ----------------------------------------
@@ -662,9 +747,21 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
                     f_f = prepare_features(forget_feats_dict[layer])
                     r_f = prepare_features(retain_feats_dict[layer])
                     r_ref_f = prepare_features(retain_ref_feats_dict[layer])
-                    align_loss = align_loss + retain_alignment_loss(r_f, r_ref_f)
+                    # Retain-side entanglement protection is computed per-layer
+                    # (each layer has its own feature geometry) and no-grad:
+                    # it's a weighting on the loss, not a path gradients flow
+                    # back through.
+                    _r_weights = None
+                    if retain_entanglement_protection:
+                        with torch.no_grad():
+                            _r_weights = compute_retain_entanglement_scores(
+                                r_f.detach(), f_f.detach(),
+                                protection_strength=retain_protection_strength,
+                            )
+                    align_loss = align_loss + retain_alignment_loss(
+                        r_f, r_ref_f, entanglement_weights=_r_weights)
                     rf_loss = rf_loss + retain_forget_loss(r_f, f_f, entanglement_scores=e_scores)
-                    ff_loss = ff_loss + forget_forget_loss(f_f)
+                    ff_loss = ff_loss + forget_forget_loss(f_f, mode=forget_forget_mode)
 
                 if itr % 100 == 0:
                     print(f"multi-layer contrastive over {layers}")
@@ -679,9 +776,20 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
                 retain_feats = prepare_features(retain_feats)
                 retain_ref_feats = prepare_features(retain_ref_feats)
 
-                align_loss = retain_alignment_loss(retain_feats, retain_ref_feats)
+                # Retain-side entanglement protection (no-grad: a weighting on
+                # the alignment penalty, not a path gradients flow through).
+                _r_weights = None
+                if retain_entanglement_protection:
+                    with torch.no_grad():
+                        _r_weights = compute_retain_entanglement_scores(
+                            retain_feats.detach(), forget_feats.detach(),
+                            protection_strength=retain_protection_strength,
+                        )
+
+                align_loss = retain_alignment_loss(
+                    retain_feats, retain_ref_feats, entanglement_weights=_r_weights)
                 rf_loss = retain_forget_loss(retain_feats, forget_feats, entanglement_scores=e_scores)
-                ff_loss = forget_forget_loss(forget_feats)
+                ff_loss = forget_forget_loss(forget_feats, mode=forget_forget_mode)
 
                 if itr % 100 == 0:
                     print("forget_feats shape:", forget_feats.shape)
@@ -846,6 +954,9 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
             "feature_align_weight": feature_align_weight,
             "retain_forget_weight": retain_forget_weight,
             "forget_forget_weight": forget_forget_weight,
+            "forget_forget_mode": forget_forget_mode,
+            "retain_entanglement_protection": retain_entanglement_protection,
+            "retain_protection_strength": retain_protection_strength,
             "remain_reg_param": remain_reg_param,
             "target_layer": target_layer,
             "poison_epoch": poison_epoch,

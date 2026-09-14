@@ -81,6 +81,24 @@ def get_parameters():
     parser.add_argument('--feature_align_weight', type=float, default=0.0, help='weight for retain to original feature alignment loss')
     parser.add_argument('--retain_forget_weight', type=float, default=0.0, help='weight for retain forget cosine similarity loss')
     parser.add_argument('--forget_forget_weight', type=float, default=0.0, help='weight for forget forget cosine similarity loss')
+    parser.add_argument('--forget_forget_mode', type=str, default='attract', choices=['attract', 'disperse'],
+                        help='Direction of the forget-forget term. "attract" (default, original '
+                             'behavior) pulls forget representations into a shared cluster; '
+                             '"disperse" scatters them instead. Clustering makes forget samples '
+                             'easy for a confidence-based MIA to spot and trivially re-separable '
+                             '(pushing AIN below 1.0), neither of which the retrain model this is '
+                             'measured against does - see gear.py:forget_forget_loss.')
+    parser.add_argument('--retain_entanglement_protection', action='store_true',
+                        help='Make entanglement weighting symmetric: also scale the retain-side '
+                             'alignment penalty by each retain sample\'s entanglement with the '
+                             'forget class, so semantically adjacent retain classes (the ones that '
+                             'absorb collateral damage) are protected hardest. Off by default. '
+                             'Independent of --use_entanglement_weighting, but designed to pair '
+                             'with it.')
+    parser.add_argument('--retain_protection_strength', type=float, default=1.0,
+                        help='How much extra protection entanglement buys a retain sample: its '
+                             'alignment weight is 1 + strength * max(cos(z_retain, forget_centroid), 0). '
+                             'Only used with --retain_entanglement_protection.')
 
     # gamma_rep scales the combined contrastive/representation loss (CL+ES);
     # remain_reg (above) separately scales the plain retain cross-entropy loss.
