@@ -122,12 +122,36 @@ def _save_cache(cache_path, cache):
         json.dump(cache, f, indent=2)
 
 
+def _qualify_cache_key(cache_key, target_acc, lr, max_epochs, eval_interval):
+    """Appends the measurement settings to the caller's cache key.
+
+    A cached relearn_time is only reusable by a run that would have measured
+    it the same way. The caller's key identifies the *config*
+    (dataset/forget_class/seed) but not the *measurement*, so without this a
+    run at a different --ain_eval_interval (or lr/max_epochs/error_range,
+    which moves target_acc) would silently reuse a gold value computed under
+    different settings and report a wrong AIN ratio for every method - with
+    no error, since the stale number is a perfectly valid integer.
+
+    Changing any of these now misses the old entry and recomputes, which is
+    the safe failure direction: a redundant computation rather than a
+    silently incorrect denominator. Old entries are left in place, harmless
+    and simply unused.
+    """
+    if cache_key is None:
+        return None
+    return (f"{cache_key}|target_acc={target_acc:.6f}|lr={lr}"
+            f"|max_epochs={max_epochs}|eval_interval={eval_interval}")
+
+
 def _gold_relearn_time(retrain_model, relearn_loader, eval_loader, target_acc, device,
                         lr, max_epochs, eval_interval, cache_key, cache_path):
     """Computes (or reuses, via an on-disk cache) the retrain/gold-standard
     model's relearn_time - the expensive half of the AIN ratio, which is the
     same for every method evaluated against a given (dataset, forget_class,
-    seed) config. Uncached (cache_key=None) recomputes every call."""
+    seed) config *measured the same way* (see _qualify_cache_key).
+    Uncached (cache_key=None) recomputes every call."""
+    cache_key = _qualify_cache_key(cache_key, target_acc, lr, max_epochs, eval_interval)
     if cache_key is not None:
         cache = _load_cache(cache_path)
         if cache_key in cache:
