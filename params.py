@@ -15,7 +15,7 @@ def get_parameters():
                         help='dataset, e.g. cifar10, cifar100, tinyimagenet, 20newsgroups, fashionmnist')
 
     # Which model to use
-    parser.add_argument('--model_name', type=str, default='AllCNN', choices=['AllCNN', 'resnet', 'resnet50', 'vit', 'distilbert'], help='model name')
+    parser.add_argument('--model_name', type=str, default='AllCNN', choices=['AllCNN', 'resnet', 'resnet50', 'resnet18', 'vgg16', 'vit', 'distilbert'], help='model name')
 
     # Model settings
     parser.add_argument('--optim_name', type=str, default='sgd', choices=['sgd', 'adam'], help='optimizer name')
@@ -172,9 +172,9 @@ def get_parameters():
 
     VALID_PAIRINGS = {
         'cifar10':      ['AllCNN'],
-        'cifar100':     ['AllCNN', 'resnet', 'resnet50', 'vit'],
+        'cifar100':     ['AllCNN', 'resnet', 'resnet50', 'resnet18', 'vgg16', 'vit'],
         'fashionmnist': ['AllCNN'],
-        'tinyimagenet': ['resnet', 'resnet50', 'vit'],
+        'tinyimagenet': ['resnet', 'resnet50', 'resnet18', 'vgg16', 'vit'],
         '20newsgroups': ['distilbert'],
     }
     if args.data_name in VALID_PAIRINGS:

@@ -3,7 +3,7 @@ from sklearn.metrics import accuracy_score
 import torch
 from torch import nn, optim
 from tqdm import tqdm
-from models import AllCNN, CustomResNet, ViT
+from models import AllCNN, CustomResNet, ViT, VGG
 import csv
 from torchvision import datasets
 from sklearn.utils.class_weight import compute_class_weight
@@ -143,6 +143,20 @@ def train_save_model(train_loader, val_loader, model_name, optim_name, learning_
         model = nn.DataParallel(model)
         model.to(device)
 
+    elif model_name == 'resnet18':
+        cifar_stem = data_name in ('cifar10', 'cifar100')
+        model = CustomResNet(num_classes=num_classes, cifar_stem=cifar_stem, arch='resnet18')
+        model = nn.DataParallel(model)
+        model.to(device)
+
+    elif model_name == 'vgg16':
+        # Pretrained-on-ImageNet, fixed-224x224-input architecture - like vit,
+        # the 224x224+ImageNet-normalization resize happens in
+        # make_dataloaders.get_dataset, not here.
+        model = VGG(num_classes=num_classes)
+        model = nn.DataParallel(model)
+        model.to(device)
+
     elif model_name == 'vit':
         if data_name in ('cifar100', 'tinyimagenet'):
             model = ViT(num_classes=num_classes)  # native config: vit_base_patch32_224 @ 224x224
@@ -179,7 +193,7 @@ def train_save_model(train_loader, val_loader, model_name, optim_name, learning_
 
     criterion = loss_picker('cross', train_loader=train_loader, device=device, forget_class=forget_class, num_classes=num_classes)
     optimizer = optimizer_picker(optim_name, model.parameters(), lr=learning_rate, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs) if model_name in ('resnet', 'resnet50', 'vit', 'distilbert') else None
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs) if model_name in ('resnet', 'resnet50', 'resnet18', 'vgg16', 'vit', 'distilbert') else None
 
     best_acc = 0
 

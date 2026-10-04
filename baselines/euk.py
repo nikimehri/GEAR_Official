@@ -25,7 +25,10 @@ def cfk_unlearn(model_cfk, r_loader, model_name):
             for param in model_cfk.features[k].parameters():
                 param.requires_grad_(True)
 
-    elif model_name in ("resnet", "resnet50"):
+    elif model_name in ("resnet", "resnet50", "resnet18"):
+        # resnet18 shares the same named-stage structure as resnet50
+        # (models.CustomResNet's arch parameter only changes channel widths),
+        # so this branch needs no new logic, just the extra name.
         for param in model_cfk.resnet_base.layer4.parameters():
             param.requires_grad_(True)
 
@@ -88,7 +91,11 @@ def euk_unlearn(model, r_loader, model_name):
             for param in model_euk.features[k].parameters():
                 param.requires_grad_(True)
 
-    elif model_name in ("resnet", "resnet50"):
+    elif model_name in ("resnet", "resnet50", "resnet18"):
+        # resnet18's layer4 has exactly 2 BasicBlocks (vs. resnet50's 3
+        # Bottleneck blocks) - range(0,2) below covers all of resnet18's
+        # layer4, same attribute names (bn1/conv1/bn2/conv2/downsample) on
+        # both block types.
         with torch.no_grad():
             for i in range(0,2):
                 try:

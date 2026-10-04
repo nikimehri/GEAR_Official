@@ -71,9 +71,10 @@ def get_dataset(data_name, path='./data', model_name=None):
         return trainset, testset, dataset
 
     elif data_name == 'cifar100':
-        if model_name == 'vit':
-            # ViT needs 224x224 inputs and was pretrained on ImageNet, so it
-            # gets ImageNet normalization stats here instead of CIFAR-100's own.
+        if model_name in ('vit', 'vgg16'):
+            # ViT/VGG-16 need 224x224 inputs and were pretrained on ImageNet,
+            # so they get ImageNet normalization stats here instead of
+            # CIFAR-100's own.
             train_transform = transforms.Compose([
                 transforms.Resize((224, 224)),
                 transforms.RandomHorizontalFlip(),
@@ -137,7 +138,7 @@ def get_dataset(data_name, path='./data', model_name=None):
                 f"to fix it (safe to re-run)."
             )
 
-        if model_name == 'vit':
+        if model_name in ('vit', 'vgg16'):
             train_transform = transforms.Compose([
                 transforms.Resize((224, 224)),
                 transforms.RandomHorizontalFlip(),
