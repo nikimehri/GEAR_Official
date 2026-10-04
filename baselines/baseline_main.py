@@ -52,6 +52,30 @@ def test(model, loader, idx_to_class, num_classes, device):
 _ain_model_cache = {}
 
 
+def save_baseline_checkpoint(model, method_label, model_type, data_name, forget_class, seed, checkpoint_dir):
+    """Saves a baseline's final unlearned model as a full pickled model
+    object (not a state_dict) - the same convention trainer.py/gear.py
+    already use for original/retrain/GEAR checkpoints, so any downstream
+    consumer (e.g. a linear-probe script) handles every checkpoint source
+    identically via torch.load + the usual nn.DataParallel-unwrap check.
+
+    Filename encodes every field a consumer needs to identify the run
+    without parsing free-text: {model_type}_{data_name}_{method_label}_
+    forget{forget_class}_seed{seed}.pth. Returns the path written.
+
+    Unlike trainer.py/gear.py's saves, these are NOT nn.DataParallel-wrapped
+    (baseline_utils.load_model never wraps its models) - downstream code
+    must handle both wrapped and unwrapped checkpoints, which is already
+    the established pattern everywhere else in this codebase
+    (hasattr(model, 'module') / isinstance(model, nn.DataParallel))."""
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    filename = f"{model_type}_{data_name}_{method_label}_forget{forget_class}_seed{seed}.pth"
+    path = os.path.join(checkpoint_dir, filename)
+    torch.save(model, path)
+    print(f"[save_checkpoints] Saved {method_label} checkpoint to {path}")
+    return path
+
+
 def _load_ain_reference_model(path, model_type, num_classes, data_name, device):
     """Loads a checkpoint for AIN's original_model/retrain_model references,
     memoized by path so the same checkpoint isn't reloaded on every single
@@ -206,6 +230,13 @@ if __name__ == '__main__':
                         help='Max epochs of relearning before AIN reports non-convergence (inf).')
     parser.add_argument('--ain_eval_interval', type=int, default=50,
                         help='Mini-batch steps between AIN relearning-accuracy checks.')
+
+    parser.add_argument('--save_checkpoints', action='store_true',
+                        help='Save each method\'s final unlearned model to '
+                             '{MODEL_CHECKPOINT_ROOT}/baseline_models/ (single-experiment mode '
+                             'only). Off by default - these runs are normally metrics-only, and '
+                             'baseline checkpoints are mainly needed for downstream analysis (e.g. '
+                             'a linear-probe evaluation) that not every run requires.')
 
     # --- DELETE arguments ---
     parser.add_argument('--delete_epochs', type=int, default=20,
@@ -363,6 +394,9 @@ if __name__ == '__main__':
                     num_classes=num_classes,
                     target_forget_acc=target_forget_acc,
                 )
+                if args.save_checkpoints:
+                    save_baseline_checkpoint(model_s, 'scrub-r', model_type, data_name, forget_class, seed, BASELINE_DIR)
+                    save_baseline_checkpoint(model_s_final, 'scrub', model_type, data_name, forget_class, seed, BASELINE_DIR)
                 readouts[unlearn_type][data_name] = {
                     "SCRUB-R": all_readouts(model_s, test_loader, final_forget_loader, final_remain_loader, name='SCRUB-R', seed=seed),
                     "SCRUB":   all_readouts(model_s_final, test_loader, final_forget_loader, final_remain_loader, name='SCRUB', seed=seed),
@@ -370,18 +404,26 @@ if __name__ == '__main__':
             elif unlearn_type == 'finetune':
                 print("Forgetting by Fine-tuning:")
                 finetune(model, train_remain_loader, epochs=10, quiet=True, lr=0.04)
+                if args.save_checkpoints:
+                    save_baseline_checkpoint(model, 'finetune', model_type, data_name, forget_class, seed, BASELINE_DIR)
                 readouts[unlearn_type][data_name] = all_readouts(model, test_loader, final_forget_loader, final_remain_loader, name='Finetune', seed=seed)
             elif unlearn_type == 'neggrad':
                 print("Forgetting by NegGrad:")
                 negative_grad(model, train_remain_loader, train_forget_loader, alpha=0.9999, epochs=5, quiet=True, lr=0.01)
+                if args.save_checkpoints:
+                    save_baseline_checkpoint(model, 'neggrad', model_type, data_name, forget_class, seed, BASELINE_DIR)
                 readouts[unlearn_type][data_name] = all_readouts(model, test_loader, final_forget_loader, final_remain_loader, name='NegGrad', seed=seed)
             elif unlearn_type == 'cfk':
                 print("Forgetting by CFK:")
                 model_cfk = cfk_unlearn(model, train_remain_loader, model_type)
+                if args.save_checkpoints:
+                    save_baseline_checkpoint(model_cfk, 'cfk', model_type, data_name, forget_class, seed, BASELINE_DIR)
                 readouts[unlearn_type][data_name] = all_readouts(model_cfk, test_loader, final_forget_loader, final_remain_loader, name='CFK', seed=seed)
             elif unlearn_type == 'euk':
                 print("Forgetting by EUK:")
                 model_euk = euk_unlearn(model, train_remain_loader, model_type)
+                if args.save_checkpoints:
+                    save_baseline_checkpoint(model_euk, 'euk', model_type, data_name, forget_class, seed, BASELINE_DIR)
                 readouts[unlearn_type][data_name] = all_readouts(model_euk, test_loader, final_forget_loader, final_remain_loader, name='EUK', seed=seed)
             elif unlearn_type == 'delete':
                 print("Forgetting by DELETE:")
@@ -390,6 +432,8 @@ if __name__ == '__main__':
                     unlearn_epoch=args.delete_epochs, unlearn_rate=args.delete_lr,
                     disable_bn=args.delete_disable_bn,
                 )
+                if args.save_checkpoints:
+                    save_baseline_checkpoint(model_delete, 'delete', model_type, data_name, forget_class, seed, BASELINE_DIR)
                 readouts[unlearn_type][data_name] = all_readouts(model_delete, test_loader, final_forget_loader, final_remain_loader, name='DELETE', seed=seed)
             elif unlearn_type == 'ssd':
                 print("Forgetting by SSD:")
@@ -399,6 +443,8 @@ if __name__ == '__main__':
                     selection_weighting=args.ssd_selection_weighting,
                     model_name=model_type,
                 )
+                if args.save_checkpoints:
+                    save_baseline_checkpoint(model_ssd, 'ssd', model_type, data_name, forget_class, seed, BASELINE_DIR)
                 readouts[unlearn_type][data_name] = all_readouts(model_ssd, test_loader, final_forget_loader, final_remain_loader, name='SSD', seed=seed)
             elif unlearn_type == 'coun':
                 if model_type not in COUN_VALID_PAIRINGS.get(data_name, []):
@@ -415,6 +461,8 @@ if __name__ == '__main__':
                         lambda_scale=args.coun_lambda_scale, temp=args.coun_temp,
                         epochs=args.coun_epochs, lr=args.coun_lr,
                     )
+                    if args.save_checkpoints:
+                        save_baseline_checkpoint(model_coun, 'coun', model_type, data_name, forget_class, seed, BASELINE_DIR)
                     readouts[unlearn_type][data_name] = all_readouts(model_coun, test_loader, final_forget_loader, final_remain_loader, name='CoUn', seed=seed)
             elif unlearn_type == 'cu':
                 print("Forgetting by CU:")
@@ -424,6 +472,8 @@ if __name__ == '__main__':
                     omega=args.cu_omega, lr=args.cu_lr, max_epochs=args.cu_epochs,
                     eval_forget_loader=final_forget_loader,
                 )
+                if args.save_checkpoints:
+                    save_baseline_checkpoint(model_cu, 'cu', model_type, data_name, forget_class, seed, BASELINE_DIR)
                 readouts[unlearn_type][data_name] = all_readouts(model_cu, test_loader, final_forget_loader, final_remain_loader, name='CU', seed=seed)
             elif unlearn_type == 'cheng_unlearn':
                 print("Forgetting by Cheng et al. (retain-forget entanglement):")
@@ -441,6 +491,8 @@ if __name__ == '__main__':
                         stage2_epochs=args.cheng_stage2_epochs, stage2_lr=args.cheng_stage2_lr,
                         momentum=args.cheng_momentum, alpha=args.cheng_alpha,
                     )
+                    if args.save_checkpoints:
+                        save_baseline_checkpoint(model_cheng, 'cheng_unlearn', model_type, data_name, forget_class, seed, BASELINE_DIR)
                     readouts[unlearn_type][data_name] = all_readouts(model_cheng, test_loader, final_forget_loader, final_remain_loader, name='ChengUnlearn', seed=seed)
             elif unlearn_type == 'eval_orig':
                 print("Evaluating Retrain Model:")
