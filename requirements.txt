@@ -32,7 +32,7 @@ pillow==12.1.0
 pyparsing==3.3.2
 python_dateutil==2.9.0.post0
 pyyaml==6.0.3
-safetensors==0.7.0
+safetensors==0.8.0
 scikit_image==0.26.0
 scikit_learn==1.8.0
 scipy==1.17.0
