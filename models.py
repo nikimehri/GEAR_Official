@@ -1,7 +1,7 @@
 from torch import nn
 import torch
 import timm
-from torchvision.models import resnet50, ResNet50_Weights
+from torchvision.models import resnet18, ResNet18_Weights, resnet50, ResNet50_Weights, vgg16, VGG16_Weights
 
 
 class Identity(nn.Module):
@@ -102,16 +102,29 @@ class AllCNN(nn.Module):
         return logits, activations
 
 
-class CustomResNet(nn.Module):
-    """A ResNet-50 backbone (pretrained on ImageNet) with a custom classifier
-    head. Set cifar_stem=True when training on small (e.g. 32x32 CIFAR) images
-    — the default ImageNet stem (7x7 stride-2 conv + maxpool) downsamples too
-    aggressively for small inputs, so it's swapped for a 3x3 stride-1 conv with
-    no maxpool."""
+_RESNET_BUILDERS = {
+    'resnet18': (resnet18, ResNet18_Weights.DEFAULT),
+    'resnet50': (resnet50, ResNet50_Weights.DEFAULT),
+}
 
-    def __init__(self, num_classes, cifar_stem=False):
+
+class CustomResNet(nn.Module):
+    """A ResNet backbone (pretrained on ImageNet) with a custom classifier
+    head. arch selects the depth: 'resnet50' (default, 2048-d penultimate
+    features) or 'resnet18' (512-d). Set cifar_stem=True when training on
+    small (e.g. 32x32 CIFAR) images — the default ImageNet stem (7x7 stride-2
+    conv + maxpool) downsamples too aggressively for small inputs, so it's
+    swapped for a 3x3 stride-1 conv with no maxpool. Everything below this
+    point (forward/get_embedding/forward_with_features, the layer1-4 hook
+    convention) is architecture-depth-agnostic - resnet18 and resnet50 share
+    the same named-stage structure, just with different channel widths."""
+
+    def __init__(self, num_classes, cifar_stem=False, arch='resnet50'):
         super(CustomResNet, self).__init__()
-        self.resnet_base = resnet50(weights=ResNet50_Weights.DEFAULT)
+        if arch not in _RESNET_BUILDERS:
+            raise ValueError(f"CustomResNet arch must be one of {list(_RESNET_BUILDERS)}, got {arch!r}")
+        builder, weights = _RESNET_BUILDERS[arch]
+        self.resnet_base = builder(weights=weights)
         num_ftrs = self.resnet_base.fc.in_features
         self.resnet_base.fc = nn.Identity()
 
@@ -178,6 +191,70 @@ class CustomResNet(nn.Module):
         logits = self._classifier(out)
         for h in hooks:
             h.remove()
+        return logits, activations
+
+
+class VGG(nn.Module):
+    """A VGG-16 backbone (pretrained on ImageNet) with a replaced classifier
+    head. Like ViT, this is a pretrained-on-ImageNet architecture not suited
+    to small (32x32/64x64) inputs without resizing - the dataset transform
+    pipeline resizes to 224x224 + ImageNet-normalizes for this model, the
+    same treatment already established for ViT (see
+    make_dataloaders.get_dataset's `model_name == 'vit'` branch, extended to
+    also cover 'vgg16').
+
+    get_embedding returns the standard 4096-d "fc7" representation (the
+    output of the classifier's second Linear+ReLU+Dropout block, immediately
+    before the final Linear(4096, num_classes)) - the conventional VGG
+    penultimate layer used throughout the linear-probing/OOD-detection
+    literature, playing the same role ResNet's pooled-conv output or ViT's
+    CLS token does for those architectures."""
+
+    FC7_LAYER_IDX = 5  # index of classifier's second Dropout (a no-op in
+                        # eval mode); get_embedding/forward_with_features are
+                        # defined to agree exactly, including outside eval mode.
+
+    def __init__(self, num_classes):
+        super(VGG, self).__init__()
+        self.vgg = vgg16(weights=VGG16_Weights.DEFAULT)
+        in_features = self.vgg.classifier[6].in_features
+        self.vgg.classifier[6] = nn.Linear(in_features, num_classes)
+
+    def forward(self, x):
+        return self.vgg(x)
+
+    def get_embedding(self, x):
+        """Returns the 4096-d fc7 representation - the input to the final
+        classifier layer."""
+        features = self.vgg.features(x)
+        features = self.vgg.avgpool(features)
+        features = torch.flatten(features, 1)
+        return self.vgg.classifier[:self.FC7_LAYER_IDX + 1](features)
+
+    def forward_with_features(self, x, capture_layers=None):
+        """Runs the forward pass with a forward hook on the fc7 layer
+        (self.vgg.classifier[FC7_LAYER_IDX], integer-indexed into the
+        classifier Sequential - same indexing convention AllCNN's
+        forward_with_features uses for self.features). Only one capture
+        point is supported: VGG has no ResNet-style named stages or
+        ViT-style transformer-block list to address by an arbitrary index,
+        just this one established penultimate-feature location. Hooks are
+        always removed afterward so repeated calls don't leak/accumulate."""
+        if capture_layers is None:
+            capture_layers = [self.FC7_LAYER_IDX]
+        if list(capture_layers) != [self.FC7_LAYER_IDX]:
+            raise ValueError(
+                f"VGG.forward_with_features only supports capturing the fc7 "
+                f"layer (index {self.FC7_LAYER_IDX}); got {capture_layers}"
+            )
+        activations = {}
+
+        def hook(module, inp, out):
+            activations[self.FC7_LAYER_IDX] = out
+
+        handle = self.vgg.classifier[self.FC7_LAYER_IDX].register_forward_hook(hook)
+        logits = self.vgg(x)
+        handle.remove()
         return logits, activations
 
 
