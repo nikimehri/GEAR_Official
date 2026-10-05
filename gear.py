@@ -856,9 +856,6 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
         test_forget_loader, test_remain_loader = get_custom_forget_loader_oculoplastics(dv, test_metadata)
         _, train_remain_loader = get_custom_forget_loader_oculoplastics(dt, train_metadata)
     else:
-        # Unreachable: custom_forget/oculoplastics are booleans and the three
-        # branches above already cover every combination. Kept explicit so
-        # test_forget_loader/test_remain_loader are never used unassigned.
         raise ValueError("Unhandled custom_forget/oculoplastics combination")
 
     mode = ''
