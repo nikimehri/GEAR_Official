@@ -25,7 +25,9 @@ def set_up_save(args, name):
     csv_columns = [
         'Dataset', 'Model', 'Original Acc', 'Retrain Acc',
         'Forget Acc SOTA', 'Remain Acc SOTA', 'Per Class Accuracies SOTA', 'Unlearning Time',
-        'Forget Acc', 'Retain Remote Acc', 'Retain Adjacent Acc', 'Test Acc', 'MIA', 'AIN',
+        'Forget Acc', 'Remain Acc', 'Retain Remote Acc', 'Retain Adjacent Acc', 'Test Acc',
+        'MIA Confidence Mean', 'MIA Confidence Std', 'MIA Loss-Threshold AUC', 'MIA Loss-Threshold Acc',
+        'AIN', 'TSNE Plot Path',
     ]
 
     with open(output_file_name, 'w', newline='') as csvfile:

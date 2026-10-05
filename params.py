@@ -152,6 +152,11 @@ def get_parameters():
     parser.add_argument('--ain_eval_interval', type=int, default=50,
                         help='Mini-batch steps between AIN relearning-accuracy checks.')
 
+    parser.add_argument('--tsne', action='store_true',
+                        help='Generate a forget-vs-retain t-SNE plot ({name}_tsne.png) for this run. '
+                             'Off by default - like --compute_ain, this is a noticeably more expensive '
+                             'extra step (embeds every test forget/remain sample) than the other metrics.')
+
     args = parser.parse_args()
 
     def require_arg(arg_name, condition, reason):

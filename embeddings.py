@@ -78,6 +78,37 @@ def compute_embedding_complexity(model, forget_loader, retain_loader, device='cu
     }
 
 
+def plot_forget_retain_tsne(model, forget_loader, remain_loader, device, output_path, title=None):
+    """Saves a single-panel t-SNE plot colored by forget-vs-retain status
+    (2 colors + the existing star-vs-circle marker convention), NOT by
+    fine-grained class - unlike plot_tsne below (hardcoded to exactly 3
+    classes, built for the 3-class clinical datasets' --tsne_embeddings
+    mode, left untouched here), this scales to any number of classes
+    (CIFAR-10/100, TinyImageNet, 20 Newsgroups) since it never needs a
+    per-class color at all. Directly visualizes the thing GEAR's whole
+    approach targets: whether forget-sample representations have separated
+    from the retain distribution. Returns output_path for convenience."""
+    embeddings, predictions, is_forget_sample, true_labels = get_embeddings_predictions_and_forget_indications(
+        model, forget_loader, remain_loader, device
+    )
+    tsne = TSNE(n_components=2, random_state=0)
+    pts = tsne.fit_transform(embeddings)
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    rem = ~is_forget_sample
+    fog = is_forget_sample
+    ax.scatter(pts[rem, 0], pts[rem, 1], c='steelblue', marker='o', s=60, alpha=0.6, label='Retain')
+    ax.scatter(pts[fog, 0], pts[fog, 1], c='orangered', marker='*', s=220, alpha=0.9, label='Forget')
+    ax.set_title(title or 'Forget vs. Retain (t-SNE)', fontsize=14)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.legend(loc='best', fontsize=11, frameon=True)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=200)
+    plt.close(fig)
+    return output_path
+
+
 def get_embeddings_predictions_and_forget_indications(model, forget_loader, remain_loader, device):
     """Runs model over both loaders, collecting final embeddings, predicted
     labels, true labels, and a boolean "is this a forget sample" flag for

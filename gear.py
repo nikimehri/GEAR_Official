@@ -8,6 +8,7 @@ import time
 from make_dataloaders import *
 import class_hierarchy
 import ain_metric
+import embeddings
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import csv
@@ -464,7 +465,7 @@ def _plot_loss_curves(loss_log: dict, output_name: str) -> None:
 # RESULTS LOGGING
 # =============================================================================
 
-def _log_results_to_csv(csv_path: str, row: dict) -> None:
+def log_results_to_csv(csv_path: str, row: dict) -> None:
     """
     Append one results row to a CSV. Creates the file with headers if it doesn't exist.
     Each sweep run appends one row — no manual copy-pasting from stdout.
@@ -528,6 +529,12 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
          ain_eval_interval=50,
          ain_cache_path='ain_gold_cache.json',
          seed=None,
+         # ----------------------------------------------------------
+         # t-SNE (opt-in: embeds every test forget/remain sample, which is
+         # noticeably slower than the other metrics - off by default, same
+         # reasoning as compute_ain)
+         # ----------------------------------------------------------
+         generate_tsne=False,
          ):
     """Trains an unlearn_model away from ori_model's weights by minimizing a
     retain cross-entropy loss plus a feature-space contrastive/entanglement
@@ -944,6 +951,19 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
     elif compute_ain:
         print('[AIN] compute_ain is set but no retrain model was provided - skipping (AIN reported as N/A).')
 
+    # --- t-SNE (opt-in via generate_tsne) -----------------------------------
+    # Reuses the test_forget_loader/test_remain_loader already built above,
+    # rather than re-deriving them - same forget/remain split the accuracy
+    # metrics just used.
+    tsne_path = 'N/A'
+    if generate_tsne:
+        tsne_path = embeddings.plot_forget_retain_tsne(
+            unlearn_model, test_forget_loader, test_remain_loader, device,
+            output_path=f"{output_name}_tsne.png",
+            title=f"{output_name} - Forget vs. Retain (t-SNE)",
+        )
+        print(f"t-SNE plot saved to {tsne_path}")
+
     # --- Log everything to CSV ---------------------------------------------
     if results_csv is not None:
         row = {
@@ -983,12 +1003,36 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
             "lt_mia_acc": lt_mia_acc,
             "AIN": ain_score,
             "unlearning_time": gear_time,
+            "tsne_path": tsne_path,
         }
         row.update(retrain_metrics)
-        _log_results_to_csv(results_csv, row)
+        log_results_to_csv(results_csv, row)
 
     end = time.time()
     print('Time Consuming:', end - start, 'secs')
 
     unlearn_model.to(device)
-    return unlearn_model, forget_acc, remain_acc, gear_time, test_acc, mia_mean, retain_adjacent_acc, retain_remote_acc, ain_score
+
+    # Single, complete record of every metric this run computed - covers
+    # the full requested set (run time, forget/retain/test accuracy, both
+    # MIA types, AIN, Retain Adjacent/Remote Accuracy, t-SNE path) in one
+    # place, so main.py's own {name}.csv can carry everything the richer
+    # {name}_sweep_results.csv row above already does, instead of the two
+    # files silently drifting apart.
+    full_metrics = {
+        'run_time': gear_time,
+        'forget_acc': forget_acc.item() if isinstance(forget_acc, torch.Tensor) else forget_acc,
+        'remain_acc': remain_acc.item() if isinstance(remain_acc, torch.Tensor) else remain_acc,
+        'test_acc': test_acc.item() if isinstance(test_acc, torch.Tensor) else test_acc,
+        'mia_confidence_mean': mia_mean,
+        'mia_confidence_std': mia_std,
+        'mia_loss_threshold_auc': lt_mia_auc,
+        'mia_loss_threshold_acc': lt_mia_acc,
+        'ain_score': ain_score,
+        'retain_adjacent_acc': retain_adjacent_acc,
+        'retain_remote_acc': retain_remote_acc,
+        'tsne_path': tsne_path,
+    }
+
+    return (unlearn_model, forget_acc, remain_acc, gear_time, test_acc, mia_mean,
+            retain_adjacent_acc, retain_remote_acc, ain_score, full_metrics)

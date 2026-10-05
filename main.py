@@ -170,13 +170,14 @@ def main(args):
             ain_max_epochs=args.ain_max_epochs,
             ain_eval_interval=args.ain_eval_interval,
             seed=args.seed,
+            generate_tsne=args.tsne,
         )
 
         if args.run_sota:
             print('RUNNING GEAR UNLEARNING (evaluated against the test set)')
             save_me = args.name + '_SOTA'
             unlearn_model_sota, forget_acc_sota, remain_acc_sota, unlearning_time, test_acc_sota, mia_score_sota, \
-                retain_adjacent_acc_sota, retain_remote_acc_sota, ain_score_sota = gear.gear(
+                retain_adjacent_acc_sota, retain_remote_acc_sota, ain_score_sota, full_metrics_sota = gear.gear(
                 ori_model, train_forget_loader, trainset, testset, test_loader, device,
                 test_metadata=test_dict, train_metadata=train_dict, output_name=save_me,
                 **gear_kwargs
@@ -188,11 +189,14 @@ def main(args):
             print(f'SOTA UNLEARNING TIME forgetting {num_forget} SAMPLES: {unlearning_time}')
 
             # Update the CSV file with the SOTA results. Retain Remote/Adjacent
-            # Acc, Test Acc, MIA, and AIN share column names with the
-            # --specific_settings row below (not suffixed "SOTA") - each mode
-            # writes its own row immediately after computing these values, so
-            # the two rows never cross-contaminate; which row is which is
-            # distinguishable via 'Forget Acc SOTA' vs. 'Forget Acc' being set.
+            # Acc, Test Acc, MIA columns, AIN, and TSNE Plot Path share column
+            # names with the --specific_settings row below (not suffixed
+            # "SOTA") - each mode writes its own row immediately after
+            # computing these values, so the two rows never cross-contaminate;
+            # which row is which is distinguishable via 'Forget Acc SOTA' vs.
+            # 'Forget Acc' being set. full_metrics_sota carries every field
+            # gear() computed (both MIA types, t-SNE path, etc.) in one dict,
+            # rather than each being its own positional return value.
             with open(output_file_name, 'a', newline='') as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=csv_columns)
                 row_data['Forget Acc SOTA'] = forget_acc_sota.detach().item()
@@ -202,8 +206,12 @@ def main(args):
                 row_data['Retain Remote Acc'] = retain_remote_acc_sota
                 row_data['Retain Adjacent Acc'] = retain_adjacent_acc_sota
                 row_data['Test Acc'] = test_acc_sota.detach().item() if isinstance(test_acc_sota, torch.Tensor) else test_acc_sota
-                row_data['MIA'] = mia_score_sota
+                row_data['MIA Confidence Mean'] = full_metrics_sota['mia_confidence_mean']
+                row_data['MIA Confidence Std'] = full_metrics_sota['mia_confidence_std']
+                row_data['MIA Loss-Threshold AUC'] = full_metrics_sota['mia_loss_threshold_auc']
+                row_data['MIA Loss-Threshold Acc'] = full_metrics_sota['mia_loss_threshold_acc']
                 row_data['AIN'] = ain_score_sota
+                row_data['TSNE Plot Path'] = full_metrics_sota['tsne_path']
                 writer.writerow(row_data)
 
 
@@ -215,7 +223,7 @@ def main(args):
         if args.specific_settings:
             save_me = args.name
 
-            unlearn_model, forget_acc, remain_acc, gear_time, test_acc, mia_score, retain_adjacent_acc, retain_remote_acc, ain_score = gear.gear(
+            unlearn_model, forget_acc, remain_acc, gear_time, test_acc, mia_score, retain_adjacent_acc, retain_remote_acc, ain_score, full_metrics = gear.gear(
                 ori_model, train_forget_loader, trainset, valset, val_loader, device,
                 test_metadata=val_dict, train_metadata=train_dict, output_name=save_me,
                 **gear_kwargs
@@ -227,14 +235,22 @@ def main(args):
             # Fixed columns for the GEAR-specific run. Retain Remote/Adjacent
             # Acc are 'N/A' for any dataset without a known class hierarchy
             # (see class_hierarchy.py) - currently only cifar100/tinyimagenet.
+            # full_metrics carries every field gear() computed (both MIA
+            # types, t-SNE path, etc.) in one dict, rather than each being
+            # its own positional return value.
             row_data['Forget Acc'] = forget_acc.detach().item()
+            row_data['Remain Acc'] = remain_acc.detach().item() if isinstance(remain_acc, torch.Tensor) else remain_acc
             row_data['Retain Remote Acc'] = retain_remote_acc
             row_data['Retain Adjacent Acc'] = retain_adjacent_acc
             row_data['Test Acc'] = test_acc.detach().item() if isinstance(test_acc, torch.Tensor) else test_acc
-            row_data['MIA'] = mia_score
+            row_data['MIA Confidence Mean'] = full_metrics['mia_confidence_mean']
+            row_data['MIA Confidence Std'] = full_metrics['mia_confidence_std']
+            row_data['MIA Loss-Threshold AUC'] = full_metrics['mia_loss_threshold_auc']
+            row_data['MIA Loss-Threshold Acc'] = full_metrics['mia_loss_threshold_acc']
             # 'N/A' unless --compute_ain was set (gear() already returns 'N/A'
             # by default - AIN is opt-in since it involves actual retraining).
             row_data['AIN'] = ain_score
+            row_data['TSNE Plot Path'] = full_metrics['tsne_path']
             row_data['Unlearning Time'] = gear_time
 
             with open(output_file_name, 'a', newline='') as csvfile:
