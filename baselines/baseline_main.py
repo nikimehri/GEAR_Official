@@ -2,7 +2,7 @@ import argparse
 import numpy as np
 import torch
 from scrub import scrub_unlearn
-from euk import cfk_unlearn,euk_unlearn
+from euk import cfk_unlearn, euk_unlearn, CFK_EUK_SUPPORTED_MODELS
 from neggrad import *
 from finetune import finetune
 from delete import delete_unlearn
@@ -414,17 +414,27 @@ if __name__ == '__main__':
                     save_baseline_checkpoint(model, 'neggrad', model_type, data_name, forget_class, seed, BASELINE_DIR)
                 readouts[unlearn_type][data_name] = all_readouts(model, test_loader, final_forget_loader, final_remain_loader, name='NegGrad', seed=seed)
             elif unlearn_type == 'cfk':
-                print("Forgetting by CFK:")
-                model_cfk = cfk_unlearn(model, train_remain_loader, model_type)
-                if args.save_checkpoints:
-                    save_baseline_checkpoint(model_cfk, 'cfk', model_type, data_name, forget_class, seed, BASELINE_DIR)
-                readouts[unlearn_type][data_name] = all_readouts(model_cfk, test_loader, final_forget_loader, final_remain_loader, name='CFK', seed=seed)
+                if model_type not in CFK_EUK_SUPPORTED_MODELS:
+                    print(f"[cfk] Not applicable to model_name='{model_type}' - CFK's 'freeze all but "
+                          f"the last representational block' logic has no branch for this architecture "
+                          f"(see baselines/euk.py:CFK_EUK_SUPPORTED_MODELS). Skipping.")
+                else:
+                    print("Forgetting by CFK:")
+                    model_cfk = cfk_unlearn(model, train_remain_loader, model_type)
+                    if args.save_checkpoints:
+                        save_baseline_checkpoint(model_cfk, 'cfk', model_type, data_name, forget_class, seed, BASELINE_DIR)
+                    readouts[unlearn_type][data_name] = all_readouts(model_cfk, test_loader, final_forget_loader, final_remain_loader, name='CFK', seed=seed)
             elif unlearn_type == 'euk':
-                print("Forgetting by EUK:")
-                model_euk = euk_unlearn(model, train_remain_loader, model_type)
-                if args.save_checkpoints:
-                    save_baseline_checkpoint(model_euk, 'euk', model_type, data_name, forget_class, seed, BASELINE_DIR)
-                readouts[unlearn_type][data_name] = all_readouts(model_euk, test_loader, final_forget_loader, final_remain_loader, name='EUK', seed=seed)
+                if model_type not in CFK_EUK_SUPPORTED_MODELS:
+                    print(f"[euk] Not applicable to model_name='{model_type}' - EUK's 'reset then "
+                          f"fine-tune the last representational block' logic has no branch for this "
+                          f"architecture (see baselines/euk.py:CFK_EUK_SUPPORTED_MODELS). Skipping.")
+                else:
+                    print("Forgetting by EUK:")
+                    model_euk = euk_unlearn(model, train_remain_loader, model_type)
+                    if args.save_checkpoints:
+                        save_baseline_checkpoint(model_euk, 'euk', model_type, data_name, forget_class, seed, BASELINE_DIR)
+                    readouts[unlearn_type][data_name] = all_readouts(model_euk, test_loader, final_forget_loader, final_remain_loader, name='EUK', seed=seed)
             elif unlearn_type == 'delete':
                 print("Forgetting by DELETE:")
                 model_delete = delete_unlearn(

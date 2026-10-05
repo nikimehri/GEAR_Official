@@ -6,6 +6,18 @@ from thirdparty.repdistiller.helper.loops import train_vanilla
 
 import copy
 
+# Single source of truth for which architectures cfk_unlearn/euk_unlearn
+# support - both functions' model_name branches below define this set in
+# practice (anything not in it hits their `else: raise NotImplementedError`).
+# Exposed here so callers (baseline_main.py's dispatch) can check support
+# BEFORE calling in and skip cleanly, the same way COUN_VALID_PAIRINGS lets
+# coun's dispatch branch skip cleanly for a config it doesn't support -
+# instead of letting an uncaught NotImplementedError crash the whole process
+# partway through a multi-method --method run. Unlike COUN_VALID_PAIRINGS,
+# this isn't keyed by dataset: cfk/euk's branches only ever check
+# model_name, never data_name, so a flat set is the accurate representation.
+CFK_EUK_SUPPORTED_MODELS = {'allcnn', 'resnet', 'resnet50', 'resnet18', 'vit', 'distilbert'}
+
 
 def cfk_unlearn(model_cfk, r_loader, model_name):
     """CF-k (Catastrophic Forgetting-k) baseline: freezes every parameter
