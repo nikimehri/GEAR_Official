@@ -1,4 +1,5 @@
 import argparse
+import time
 import numpy as np
 import torch
 from scrub import scrub_unlearn
@@ -14,6 +15,8 @@ from baseline_utils import *
 from models import *
 import class_hierarchy
 import ain_metric
+import embeddings
+from gear import compute_loss_threshold_mia, log_results_to_csv
 
 from path_dicts import model_paths, selective_forget_models,chen_paths,ravi_paths,med_unlearn_paths, MODEL_CHECKPOINT_ROOT
 from tqdm import tqdm
@@ -92,15 +95,22 @@ def _load_ain_reference_model(path, model_type, num_classes, data_name, device):
     return _ain_model_cache[path]
 
 
-def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, seed=2022, name='method'):
+def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, seed=2022, name='method',
+                  unlearn_time=None):
     """Standard "report card" for any unlearned model: overall test/forget/
     remain accuracy, per-class accuracy, Retain Adjacent/Remote Accuracy, AIN
-    (opt-in via --compute_ain), and a membership-inference-attack score.
-    Called once per baseline method after it's finished running. Like the
-    rest of this module, relies on device/num_classes/idx_to_class/
-    data_name/dataset/forget_class/args/train_forget_loader/orig_model_path/
-    retrain_model_path already being set as module-level globals by the
-    caller (single-experiment or sweep-mode block) before this is invoked."""
+    (opt-in via --compute_ain), and BOTH membership-inference-attack types
+    (confidence-vector-based and loss-threshold-based - see gear.py's
+    compute_mia/compute_loss_threshold_mia docstrings for what distinguishes
+    them). Also appends one row to {args.name}_full_report.csv covering
+    every metric here plus unlearn_time (the caller's responsibility to
+    measure and pass in - this function only records it) and, when --tsne
+    is set, a forget-vs-retain t-SNE plot path. Called once per baseline
+    method after it's finished running. Like the rest of this module, relies
+    on device/num_classes/idx_to_class/data_name/dataset/forget_class/args/
+    train_forget_loader/orig_model_path/retrain_model_path already being set
+    as module-level globals by the caller (single-experiment or sweep-mode
+    block) before this is invoked."""
     _, test_acc = eval(model=model, data_loader=test_loader, device=device, name='test set all class')
     _, forget_acc = eval(model=model, data_loader=final_forget_loader, device=device, name='test set forget class')
     _, remain_acc = eval(model=model, data_loader=final_remain_loader, device=device, name='test set remain class')
@@ -133,8 +143,51 @@ def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, s
             print(f"[AIN] Missing orig_model_path/retrain_model_path for '{name}' - reporting N/A.")
 
     MIA = membership_inference_attack(model, test_loader, final_forget_loader, device, seed=seed, name=name)
+    lt_mia_result = compute_loss_threshold_mia(model, train_forget_loader, final_forget_loader, device)
 
-    print(f"{name} -> Full test Acc: {test_acc:.5f} Forget Acc: {forget_acc:.5f} Remain Acc: {remain_acc:.5f} MIA: {np.mean(MIA):.2f}±{np.std(MIA):0.2f}")
+    # t-SNE (opt-in via --tsne) - same forget-vs-retain-only, class-count-
+    # agnostic plot gear.py's GEAR runs can now also generate (see
+    # embeddings.plot_forget_retain_tsne's docstring). Uses the test-set
+    # forget/remain loaders, matching gear.py's own choice for its
+    # equivalent plot exactly.
+    tsne_path = 'N/A'
+    if getattr(args, 'tsne', False):
+        tsne_path = embeddings.plot_forget_retain_tsne(
+            model, final_forget_loader, final_remain_loader, device,
+            output_path=f"{args.name}_{name}_tsne.png",
+            title=f"{name} - Forget vs. Retain (t-SNE)",
+        )
+        print(f"[tsne] Saved to {tsne_path}")
+
+    run_time = unlearn_time if unlearn_time is not None else 'N/A'
+
+    print(f"{name} -> Full test Acc: {test_acc:.5f} Forget Acc: {forget_acc:.5f} Remain Acc: {remain_acc:.5f} "
+          f"MIA: {np.mean(MIA):.2f}±{np.std(MIA):0.2f} "
+          f"MIA(loss-thr): acc={lt_mia_result['mia_acc']:.4f} auc={lt_mia_result['mia_auc']:.4f} "
+          f"RunTime: {run_time}")
+
+    # One row per method, covering every requested metric (run time, forget/
+    # retain/test accuracy, both MIA types, AIN, Retain Adjacent/Remote
+    # Accuracy, t-SNE path) in a schema matching main.py's GEAR CSV column
+    # names, so GEAR and baseline results can be directly compared.
+    log_results_to_csv(f"{args.name}_full_report.csv", {
+        'Dataset': data_name,
+        'Model': model_type,
+        'Method': name,
+        'Seed': seed,
+        'Run Time': run_time,
+        'Forget Acc': float(forget_acc),
+        'Remain Acc': float(remain_acc),
+        'Test Acc': float(test_acc),
+        'MIA Confidence Mean': float(np.mean(MIA)),
+        'MIA Confidence Std': float(np.std(MIA)),
+        'MIA Loss-Threshold AUC': lt_mia_result['mia_auc'],
+        'MIA Loss-Threshold Acc': lt_mia_result['mia_acc'],
+        'AIN': ain_score,
+        'Retain Adjacent Acc': retain_adjacent_acc,
+        'Retain Remote Acc': retain_remote_acc,
+        'TSNE Plot Path': tsne_path,
+    })
 
     return dict(
         test_error=float(test_acc),
@@ -145,6 +198,10 @@ def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, s
         AIN=ain_score,
         MIA_mean=float(np.mean(MIA)),
         MIA_std=float(np.std(MIA)),
+        MIA_loss_threshold_auc=lt_mia_result['mia_auc'],
+        MIA_loss_threshold_acc=lt_mia_result['mia_acc'],
+        run_time=run_time,
+        tsne_path=tsne_path,
         per_class=per_class_accs
     )
 
@@ -237,6 +294,10 @@ if __name__ == '__main__':
                              'only). Off by default - these runs are normally metrics-only, and '
                              'baseline checkpoints are mainly needed for downstream analysis (e.g. '
                              'a linear-probe evaluation) that not every run requires.')
+    parser.add_argument('--tsne', action='store_true',
+                        help='Generate a forget-vs-retain t-SNE plot ({name}_{method}_tsne.png) for '
+                             'every method run. Off by default - like --compute_ain, this is a '
+                             'noticeably more expensive extra step than the other metrics.')
 
     # --- DELETE arguments ---
     parser.add_argument('--delete_epochs', type=int, default=20,
@@ -378,6 +439,7 @@ if __name__ == '__main__':
                 target_forget_acc = load_retrain_forget_acc(
                     retrain_model_path, model_type, num_classes, data_name, train_forget_loader, device
                 )
+                _t0 = time.time()
                 model_s, model_s_final = scrub_unlearn(
                     teacher, student, train_remain_loader, train_forget_loader, model_type, data_name,
                     sgda_epochs=args.scrub_epochs,
@@ -394,25 +456,33 @@ if __name__ == '__main__':
                     num_classes=num_classes,
                     target_forget_acc=target_forget_acc,
                 )
+                # SCRUB-R and SCRUB both come out of this one combined
+                # training run - splitting the elapsed time between them
+                # wouldn't mean anything, so both report the same run time.
+                _scrub_time = time.time() - _t0
                 if args.save_checkpoints:
                     save_baseline_checkpoint(model_s, 'scrub-r', model_type, data_name, forget_class, seed, BASELINE_DIR)
                     save_baseline_checkpoint(model_s_final, 'scrub', model_type, data_name, forget_class, seed, BASELINE_DIR)
                 readouts[unlearn_type][data_name] = {
-                    "SCRUB-R": all_readouts(model_s, test_loader, final_forget_loader, final_remain_loader, name='SCRUB-R', seed=seed),
-                    "SCRUB":   all_readouts(model_s_final, test_loader, final_forget_loader, final_remain_loader, name='SCRUB', seed=seed),
+                    "SCRUB-R": all_readouts(model_s, test_loader, final_forget_loader, final_remain_loader, name='SCRUB-R', seed=seed, unlearn_time=_scrub_time),
+                    "SCRUB":   all_readouts(model_s_final, test_loader, final_forget_loader, final_remain_loader, name='SCRUB', seed=seed, unlearn_time=_scrub_time),
                 }
             elif unlearn_type == 'finetune':
                 print("Forgetting by Fine-tuning:")
+                _t0 = time.time()
                 finetune(model, train_remain_loader, epochs=10, quiet=True, lr=0.04)
+                _elapsed = time.time() - _t0
                 if args.save_checkpoints:
                     save_baseline_checkpoint(model, 'finetune', model_type, data_name, forget_class, seed, BASELINE_DIR)
-                readouts[unlearn_type][data_name] = all_readouts(model, test_loader, final_forget_loader, final_remain_loader, name='Finetune', seed=seed)
+                readouts[unlearn_type][data_name] = all_readouts(model, test_loader, final_forget_loader, final_remain_loader, name='Finetune', seed=seed, unlearn_time=_elapsed)
             elif unlearn_type == 'neggrad':
                 print("Forgetting by NegGrad:")
+                _t0 = time.time()
                 negative_grad(model, train_remain_loader, train_forget_loader, alpha=0.9999, epochs=5, quiet=True, lr=0.01)
+                _elapsed = time.time() - _t0
                 if args.save_checkpoints:
                     save_baseline_checkpoint(model, 'neggrad', model_type, data_name, forget_class, seed, BASELINE_DIR)
-                readouts[unlearn_type][data_name] = all_readouts(model, test_loader, final_forget_loader, final_remain_loader, name='NegGrad', seed=seed)
+                readouts[unlearn_type][data_name] = all_readouts(model, test_loader, final_forget_loader, final_remain_loader, name='NegGrad', seed=seed, unlearn_time=_elapsed)
             elif unlearn_type == 'cfk':
                 if model_type not in CFK_EUK_SUPPORTED_MODELS:
                     print(f"[cfk] Not applicable to model_name='{model_type}' - CFK's 'freeze all but "
@@ -420,10 +490,12 @@ if __name__ == '__main__':
                           f"(see baselines/euk.py:CFK_EUK_SUPPORTED_MODELS). Skipping.")
                 else:
                     print("Forgetting by CFK:")
+                    _t0 = time.time()
                     model_cfk = cfk_unlearn(model, train_remain_loader, model_type)
+                    _elapsed = time.time() - _t0
                     if args.save_checkpoints:
                         save_baseline_checkpoint(model_cfk, 'cfk', model_type, data_name, forget_class, seed, BASELINE_DIR)
-                    readouts[unlearn_type][data_name] = all_readouts(model_cfk, test_loader, final_forget_loader, final_remain_loader, name='CFK', seed=seed)
+                    readouts[unlearn_type][data_name] = all_readouts(model_cfk, test_loader, final_forget_loader, final_remain_loader, name='CFK', seed=seed, unlearn_time=_elapsed)
             elif unlearn_type == 'euk':
                 if model_type not in CFK_EUK_SUPPORTED_MODELS:
                     print(f"[euk] Not applicable to model_name='{model_type}' - EUK's 'reset then "
@@ -431,31 +503,37 @@ if __name__ == '__main__':
                           f"architecture (see baselines/euk.py:CFK_EUK_SUPPORTED_MODELS). Skipping.")
                 else:
                     print("Forgetting by EUK:")
+                    _t0 = time.time()
                     model_euk = euk_unlearn(model, train_remain_loader, model_type)
+                    _elapsed = time.time() - _t0
                     if args.save_checkpoints:
                         save_baseline_checkpoint(model_euk, 'euk', model_type, data_name, forget_class, seed, BASELINE_DIR)
-                    readouts[unlearn_type][data_name] = all_readouts(model_euk, test_loader, final_forget_loader, final_remain_loader, name='EUK', seed=seed)
+                    readouts[unlearn_type][data_name] = all_readouts(model_euk, test_loader, final_forget_loader, final_remain_loader, name='EUK', seed=seed, unlearn_time=_elapsed)
             elif unlearn_type == 'delete':
                 print("Forgetting by DELETE:")
+                _t0 = time.time()
                 model_delete = delete_unlearn(
                     model, train_forget_loader, device,
                     unlearn_epoch=args.delete_epochs, unlearn_rate=args.delete_lr,
                     disable_bn=args.delete_disable_bn,
                 )
+                _elapsed = time.time() - _t0
                 if args.save_checkpoints:
                     save_baseline_checkpoint(model_delete, 'delete', model_type, data_name, forget_class, seed, BASELINE_DIR)
-                readouts[unlearn_type][data_name] = all_readouts(model_delete, test_loader, final_forget_loader, final_remain_loader, name='DELETE', seed=seed)
+                readouts[unlearn_type][data_name] = all_readouts(model_delete, test_loader, final_forget_loader, final_remain_loader, name='DELETE', seed=seed, unlearn_time=_elapsed)
             elif unlearn_type == 'ssd':
                 print("Forgetting by SSD:")
+                _t0 = time.time()
                 model_ssd = ssd_unlearn(
                     model, train_forget_loader, full_train_loader, device,
                     dampening_constant=args.ssd_dampening_constant,
                     selection_weighting=args.ssd_selection_weighting,
                     model_name=model_type,
                 )
+                _elapsed = time.time() - _t0
                 if args.save_checkpoints:
                     save_baseline_checkpoint(model_ssd, 'ssd', model_type, data_name, forget_class, seed, BASELINE_DIR)
-                readouts[unlearn_type][data_name] = all_readouts(model_ssd, test_loader, final_forget_loader, final_remain_loader, name='SSD', seed=seed)
+                readouts[unlearn_type][data_name] = all_readouts(model_ssd, test_loader, final_forget_loader, final_remain_loader, name='SSD', seed=seed, unlearn_time=_elapsed)
             elif unlearn_type == 'coun':
                 if model_type not in COUN_VALID_PAIRINGS.get(data_name, []):
                     print(f"[coun] Not applicable to data_name='{data_name}'/model_name='{model_type}' - "
@@ -466,25 +544,29 @@ if __name__ == '__main__':
                     _, _, trainset_coun_raw = get_coun_datasets(data_name, model_type, data_path)
                     train_remain_loader_raw = DataLoader(trainset_coun_raw, batch_size=batch_size,
                                                          sampler=SubsetRandomSampler(train_remain_index))
+                    _t0 = time.time()
                     model_coun = coun_unlearn(
                         model, model_type, data_name, train_remain_loader_raw, device,
                         lambda_scale=args.coun_lambda_scale, temp=args.coun_temp,
                         epochs=args.coun_epochs, lr=args.coun_lr,
                     )
+                    _elapsed = time.time() - _t0
                     if args.save_checkpoints:
                         save_baseline_checkpoint(model_coun, 'coun', model_type, data_name, forget_class, seed, BASELINE_DIR)
-                    readouts[unlearn_type][data_name] = all_readouts(model_coun, test_loader, final_forget_loader, final_remain_loader, name='CoUn', seed=seed)
+                    readouts[unlearn_type][data_name] = all_readouts(model_coun, test_loader, final_forget_loader, final_remain_loader, name='CoUn', seed=seed, unlearn_time=_elapsed)
             elif unlearn_type == 'cu':
                 print("Forgetting by CU:")
+                _t0 = time.time()
                 model_cu = cu_unlearn(
                     model, train_forget_loader, train_remain_loader, device, num_classes,
                     lambda_ul=args.cu_lambda_ul, lambda_ce=args.cu_lambda_ce, temperature=args.cu_temp,
                     omega=args.cu_omega, lr=args.cu_lr, max_epochs=args.cu_epochs,
                     eval_forget_loader=final_forget_loader,
                 )
+                _elapsed = time.time() - _t0
                 if args.save_checkpoints:
                     save_baseline_checkpoint(model_cu, 'cu', model_type, data_name, forget_class, seed, BASELINE_DIR)
-                readouts[unlearn_type][data_name] = all_readouts(model_cu, test_loader, final_forget_loader, final_remain_loader, name='CU', seed=seed)
+                readouts[unlearn_type][data_name] = all_readouts(model_cu, test_loader, final_forget_loader, final_remain_loader, name='CU', seed=seed, unlearn_time=_elapsed)
             elif unlearn_type == 'cheng_unlearn':
                 print("Forgetting by Cheng et al. (retain-forget entanglement):")
                 adjacent_indices, remote_indices = class_hierarchy.get_adjacent_remote_split(data_name, forget_class, trainset)
@@ -494,6 +576,7 @@ if __name__ == '__main__':
                 else:
                     adjacent_loader = DataLoader(trainset, batch_size=batch_size, sampler=SubsetRandomSampler(adjacent_indices))
                     remote_loader = DataLoader(trainset, batch_size=batch_size, sampler=SubsetRandomSampler(remote_indices))
+                    _t0 = time.time()
                     model_cheng = cheng_unlearn(
                         model, train_forget_loader, adjacent_loader, remote_loader, device,
                         stage1_epochs=args.cheng_stage1_epochs, stage1_lr=args.cheng_stage1_lr,
@@ -501,15 +584,31 @@ if __name__ == '__main__':
                         stage2_epochs=args.cheng_stage2_epochs, stage2_lr=args.cheng_stage2_lr,
                         momentum=args.cheng_momentum, alpha=args.cheng_alpha,
                     )
+                    _elapsed = time.time() - _t0
                     if args.save_checkpoints:
                         save_baseline_checkpoint(model_cheng, 'cheng_unlearn', model_type, data_name, forget_class, seed, BASELINE_DIR)
-                    readouts[unlearn_type][data_name] = all_readouts(model_cheng, test_loader, final_forget_loader, final_remain_loader, name='ChengUnlearn', seed=seed)
+                    readouts[unlearn_type][data_name] = all_readouts(model_cheng, test_loader, final_forget_loader, final_remain_loader, name='ChengUnlearn', seed=seed, unlearn_time=_elapsed)
             elif unlearn_type == 'eval_orig':
+                # Not an unlearning method - evaluates --retrain_model itself
+                # as the gold-standard reference row. No unlearning happens,
+                # so Run Time is correctly 'N/A' (categorically inapplicable,
+                # not merely unmeasured) rather than a timed value.
                 print("Evaluating Retrain Model:")
                 model0 = load_model(model_type, num_classes=num_classes, data_name=data_name).to(device)
                 model0 = load_model_state(model0, retrain_model_path)
                 readouts[unlearn_type][data_name] = {
                     "Retrain": all_readouts(model0, test_loader, final_forget_loader, final_remain_loader, name='Retrain', seed=seed)
+                }
+            elif unlearn_type == 'eval_original':
+                # Mirrors eval_orig exactly, but for --original_model - the
+                # pre-unlearning model, as its own first-class reportable
+                # configuration (not just an input other methods load and
+                # then modify). Same 'N/A' Run Time reasoning as eval_orig.
+                print("Evaluating Original Model:")
+                model_orig_eval = load_model(model_type, num_classes=num_classes, data_name=data_name).to(device)
+                model_orig_eval = load_model_state(model_orig_eval, orig_model_path)
+                readouts[unlearn_type][data_name] = {
+                    "Original": all_readouts(model_orig_eval, test_loader, final_forget_loader, final_remain_loader, name='Original', seed=seed)
                 }
             else:
                 print(f"Method '{unlearn_type}' not supported in single-experiment mode.")
