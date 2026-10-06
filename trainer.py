@@ -63,12 +63,12 @@ def loss_picker(loss, train_loader=None, device='cpu', forget_class=None, num_cl
 
     return criterion
 
-def optimizer_picker(optimization, param, lr, momentum=0.):
+def optimizer_picker(optimization, param, lr, momentum=0., weight_decay=1e-4):
     if optimization == 'adam':
         optimizer = optim.Adam(param, lr=lr)
     elif optimization == 'sgd':
         print('Using SGD for optimization')
-        optimizer = optim.SGD(param, lr=lr, momentum=momentum, weight_decay=1e-4)
+        optimizer = optim.SGD(param, lr=lr, momentum=momentum, weight_decay=weight_decay)
     else:
         raise ValueError(f"Unknown optimizer '{optimization}', expected 'adam' or 'sgd'")
 
@@ -108,7 +108,8 @@ def train(model, data_loader, criterion, optimizer, loss_mode, device='cpu'):
     return running_loss
 
 
-def train_save_model(train_loader, val_loader, model_name, optim_name, learning_rate, num_epochs, device, path, dataset=None, relearning=False, unlearned_model=None, data_name=None, forget_class=None):
+def train_save_model(train_loader, val_loader, model_name, optim_name, learning_rate, num_epochs, device, path, dataset=None, relearning=False, unlearned_model=None, data_name=None, forget_class=None,
+                      momentum=0.9, weight_decay=1e-4, lr_schedule='cosine', lr_milestones=None, lr_gamma=0.1):
     start = time.time()
     losses = []
     accuracies = []
@@ -192,8 +193,17 @@ def train_save_model(train_loader, val_loader, model_name, optim_name, learning_
 
 
     criterion = loss_picker('cross', train_loader=train_loader, device=device, forget_class=forget_class, num_classes=num_classes)
-    optimizer = optimizer_picker(optim_name, model.parameters(), lr=learning_rate, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs) if model_name in ('resnet', 'resnet50', 'resnet18', 'vgg16', 'vit', 'distilbert') else None
+    optimizer = optimizer_picker(optim_name, model.parameters(), lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
+    _scheduler_eligible = model_name in ('resnet', 'resnet50', 'resnet18', 'vgg16', 'vit', 'distilbert')
+    if not _scheduler_eligible:
+        scheduler = None
+    elif lr_schedule == 'step':
+        # Classic CIFAR-ResNet recipe: drop LR by lr_gamma at each milestone
+        # epoch (e.g. milestones=[91, 136], gamma=0.1), rather than cosine's
+        # smooth anneal-to-0.
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=lr_milestones or [], gamma=lr_gamma)
+    else:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
 
     best_acc = 0
 
@@ -317,12 +327,16 @@ def train_engine(args, train_remain_loader, val_remain_loader, train_loader, val
         print(' ' * 25 + 'train original model and retrain model from scratch')
         print('=' * 100)
         ori_model, num_classes, _ = train_save_model(train_loader, val_loader, args.model_name, args.optim_name, args.lr,
-                                     args.epoch, device, model_name + "_original_model_", dataset=dataset, data_name=args.data_name, forget_class=None)
+                                     args.epoch, device, model_name + "_original_model_", dataset=dataset, data_name=args.data_name, forget_class=None,
+                                     momentum=args.momentum, weight_decay=args.weight_decay,
+                                     lr_schedule=args.lr_schedule, lr_milestones=args.lr_milestones, lr_gamma=args.lr_gamma)
 
         print('\noriginal model acc:\n', test(ori_model, val_loader, idx_to_class, num_classes, device))
 
         retrain_model, _, _ = train_save_model(train_remain_loader, val_remain_loader, args.model_name, args.optim_name,
-                                        args.lr, args.epoch, device, model_name + "_retrain_model_" + 'class_' + str(args.forget_class) + '_', dataset=dataset, data_name=args.data_name, forget_class=args.forget_class)
+                                        args.lr, args.epoch, device, model_name + "_retrain_model_" + 'class_' + str(args.forget_class) + '_', dataset=dataset, data_name=args.data_name, forget_class=args.forget_class,
+                                        momentum=args.momentum, weight_decay=args.weight_decay,
+                                        lr_schedule=args.lr_schedule, lr_milestones=args.lr_milestones, lr_gamma=args.lr_gamma)
 
         print('\nretrain model acc:\n', test(retrain_model, val_remain_loader, idx_to_class, num_classes, device))
         return ori_model, retrain_model, None
@@ -332,7 +346,9 @@ def train_engine(args, train_remain_loader, val_remain_loader, train_loader, val
         ori_model.to('cpu')
         print(model_name + "_retrain_" + exp_name + '_' )
         retrain_model, _, time_retrain = train_save_model(train_remain_loader, val_remain_loader, args.model_name, args.optim_name,
-                                        args.lr, args.epoch, device,  model_name + "_retrain_" + exp_name + '_' , dataset=dataset, data_name=args.data_name, forget_class=args.forget_class)
+                                        args.lr, args.epoch, device,  model_name + "_retrain_" + exp_name + '_' , dataset=dataset, data_name=args.data_name, forget_class=args.forget_class,
+                                        momentum=args.momentum, weight_decay=args.weight_decay,
+                                        lr_schedule=args.lr_schedule, lr_milestones=args.lr_milestones, lr_gamma=args.lr_gamma)
 
         print('\nretrain model acc:\n', test(retrain_model, val_remain_loader, idx_to_class, num_classes, device))
 

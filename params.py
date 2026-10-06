@@ -21,6 +21,24 @@ def get_parameters():
     parser.add_argument('--optim_name', type=str, default='sgd', choices=['sgd', 'adam'], help='optimizer name')
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
     parser.add_argument('--epoch', type=int, default=50, help='training epoch')
+    parser.add_argument('--momentum', type=float, default=0.9,
+                        help='SGD momentum (only used when --optim_name sgd). Was hardcoded to 0.9 '
+                             'before this flag existed, so 0.9 remains the default.')
+    parser.add_argument('--weight_decay', type=float, default=1e-4,
+                        help='SGD weight decay (only used when --optim_name sgd). Was hardcoded to '
+                             '1e-4 before this flag existed, so 1e-4 remains the default.')
+    parser.add_argument('--lr_schedule', type=str, default='cosine', choices=['cosine', 'step'],
+                        help='LR schedule for resnet/resnet18/resnet50/vgg16/vit/distilbert (AllCNN never '
+                             'uses a scheduler, unaffected by this flag). "cosine" (default) anneals '
+                             'smoothly to 0 over --epoch epochs - the existing, unchanged behavior. '
+                             '"step" instead drops LR by --lr_gamma at each epoch in --lr_milestones '
+                             '(the classic CIFAR-ResNet recipe convention).')
+    parser.add_argument('--lr_milestones', type=str, default='',
+                        help='Comma-separated epoch numbers at which to drop LR by --lr_gamma. Only '
+                             'used when --lr_schedule step, e.g. "91,136".')
+    parser.add_argument('--lr_gamma', type=float, default=0.1,
+                        help='LR decay factor applied at each --lr_milestones epoch. Only used when '
+                             '--lr_schedule step.')
 
 
     parser.add_argument('--dataset_dir', type=str, default='./data', help='dataset directory')
@@ -158,6 +176,10 @@ def get_parameters():
                              'extra step (embeds every test forget/remain sample) than the other metrics.')
 
     args = parser.parse_args()
+
+    if args.lr_schedule == 'step' and not args.lr_milestones:
+        parser.error("--lr_milestones is required when --lr_schedule step (e.g. --lr_milestones 91,136)")
+    args.lr_milestones = [int(m) for m in args.lr_milestones.split(',')] if args.lr_milestones else []
 
     def require_arg(arg_name, condition, reason):
         """Fails fast with a clear message if arg_name is missing whenever
