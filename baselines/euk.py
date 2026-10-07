@@ -16,7 +16,7 @@ import copy
 # partway through a multi-method --method run. Unlike COUN_VALID_PAIRINGS,
 # this isn't keyed by dataset: cfk/euk's branches only ever check
 # model_name, never data_name, so a flat set is the accurate representation.
-CFK_EUK_SUPPORTED_MODELS = {'allcnn', 'resnet', 'resnet50', 'resnet18', 'vit', 'vgg16', 'distilbert'}
+CFK_EUK_SUPPORTED_MODELS = {'allcnn', 'resnet', 'resnet50', 'resnet18', 'vit', 'vgg16', 'vgg16_bn', 'distilbert'}
 
 
 def cfk_unlearn(model_cfk, r_loader, model_name, cfk_lr=0.01, cfk_epochs=10, lr_decay_epochs=(10, 15, 20)):
@@ -60,7 +60,7 @@ def cfk_unlearn(model_cfk, r_loader, model_name, cfk_lr=0.01, cfk_epochs=10, lr_
         for param in model_cfk.encoder.transformer.layer[-1].parameters():
             param.requires_grad_(True)
 
-    elif model_name == 'vgg16':
+    elif model_name in ('vgg16', 'vgg16_bn'):
         # VGG has no ResNet-style stages or ViT-style block list - the
         # closest analogue to "last representational block" is fc7's own
         # Linear(4096, 4096) (classifier[3]; ReLU/Dropout at [4]/[5] have no
@@ -194,7 +194,7 @@ def euk_unlearn(model, r_loader, model_name, euk_lr=0.01, euk_epochs=10, lr_deca
         for param in model_euk.encoder.transformer.layer[-1].parameters():
             param.requires_grad_(True)
 
-    elif model_name == 'vgg16':
+    elif model_name in ('vgg16', 'vgg16_bn'):
         # Same reset-then-unfreeze pattern, same fc7 layer cfk_unlearn
         # unfreezes above (classifier[3], a single Linear(4096, 4096)).
         with torch.no_grad():

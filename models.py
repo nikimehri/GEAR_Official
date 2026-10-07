@@ -1,7 +1,8 @@
 from torch import nn
 import torch
 import timm
-from torchvision.models import resnet18, ResNet18_Weights, resnet50, ResNet50_Weights, vgg16, VGG16_Weights
+from torchvision.models import (resnet18, ResNet18_Weights, resnet50, ResNet50_Weights, vgg16, VGG16_Weights,
+                                vgg16_bn, VGG16_BN_Weights)
 
 
 class Identity(nn.Module):
@@ -201,7 +202,16 @@ class VGG(nn.Module):
     pipeline resizes to 224x224 + ImageNet-normalizes for this model, the
     same treatment already established for ViT (see
     make_dataloaders.get_dataset's `model_name == 'vit'` branch, extended to
-    also cover 'vgg16').
+    also cover 'vgg16'/'vgg16_bn').
+
+    batch_norm=True selects torchvision's vgg16_bn backbone instead of plain
+    vgg16 - same classifier Sequential shape either way (BN only changes the
+    conv `features` extractor), so FC7_LAYER_IDX/get_embedding/
+    forward_with_features/classifier[3] below apply identically to both.
+    Pass model_name='vgg16_bn' (vs. 'vgg16') at every other call site to
+    select this; see CFK_EUK_SUPPORTED_MODELS, COUN_VALID_PAIRINGS, and
+    make_dataloaders.get_dataset's 224x224-resize condition, all of which
+    treat 'vgg16'/'vgg16_bn' identically.
 
     get_embedding returns the standard 4096-d "fc7" representation (the
     output of the classifier's second Linear+ReLU+Dropout block, immediately
@@ -214,9 +224,12 @@ class VGG(nn.Module):
                         # eval mode); get_embedding/forward_with_features are
                         # defined to agree exactly, including outside eval mode.
 
-    def __init__(self, num_classes):
+    def __init__(self, num_classes, batch_norm=False):
         super(VGG, self).__init__()
-        self.vgg = vgg16(weights=VGG16_Weights.DEFAULT)
+        if batch_norm:
+            self.vgg = vgg16_bn(weights=VGG16_BN_Weights.DEFAULT)
+        else:
+            self.vgg = vgg16(weights=VGG16_Weights.DEFAULT)
         in_features = self.vgg.classifier[6].in_features
         self.vgg.classifier[6] = nn.Linear(in_features, num_classes)
 

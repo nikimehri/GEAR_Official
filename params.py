@@ -15,7 +15,7 @@ def get_parameters():
                         help='dataset, e.g. cifar10, cifar100, tinyimagenet, 20newsgroups, fashionmnist')
 
     # Which model to use
-    parser.add_argument('--model_name', type=str, default='AllCNN', choices=['AllCNN', 'resnet', 'resnet50', 'resnet18', 'vgg16', 'vit', 'distilbert'], help='model name')
+    parser.add_argument('--model_name', type=str, default='AllCNN', choices=['AllCNN', 'resnet', 'resnet50', 'resnet18', 'vgg16', 'vgg16_bn', 'vit', 'distilbert'], help='model name')
 
     # Model settings
     parser.add_argument('--optim_name', type=str, default='sgd', choices=['sgd', 'adam'], help='optimizer name')
@@ -50,6 +50,15 @@ def get_parameters():
     # set train, retrain, or unlearn. Do in separate steps for easier experimentation
     parser.add_argument('--retrain_only', action='store_true', help='retrain dropping a new class')
     parser.add_argument('--train', action='store_true', help='Train model from scratch')
+    parser.add_argument('--save_final_only', action='store_true',
+                        help='Only write the final-epoch checkpoint ({path}{epoch}_final_model_{acc}.pth), '
+                             'skipping the per-epoch {path}{epoch}.pth saves train_save_model otherwise '
+                             'writes every epoch. Off by default (preserves existing behavior) - turn this '
+                             'on for any config/architecture where the per-epoch checkpoint history isn\'t '
+                             'needed, since a full --epoch-length run writes one full model-sized file per '
+                             'epoch otherwise (large for pretrained-backbone architectures like vgg16/'
+                             'vgg16_bn/resnet50/vit at many epochs). Applies to both --train and '
+                             '--retrain_only.')
 
     # Fraction of the training set held out for validation (used for model
     # selection instead of leaking test-set decisions into training).
@@ -199,9 +208,9 @@ def get_parameters():
 
     VALID_PAIRINGS = {
         'cifar10':      ['AllCNN', 'resnet18', 'resnet50'],
-        'cifar100':     ['AllCNN', 'resnet', 'resnet50', 'resnet18', 'vgg16', 'vit'],
+        'cifar100':     ['AllCNN', 'resnet', 'resnet50', 'resnet18', 'vgg16', 'vgg16_bn', 'vit'],
         'fashionmnist': ['AllCNN'],
-        'tinyimagenet': ['resnet', 'resnet50', 'resnet18', 'vgg16', 'vit'],
+        'tinyimagenet': ['resnet', 'resnet50', 'resnet18', 'vgg16', 'vgg16_bn', 'vit'],
         '20newsgroups': ['distilbert'],
     }
     if args.data_name in VALID_PAIRINGS:

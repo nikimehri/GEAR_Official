@@ -256,7 +256,7 @@ def _coun_transform_config(data_name, model_name):
     augmentation, since native resolution isn't already close to 224x224);
     otherwise each dataset uses its own native resolution/stats/crop-based
     augmentation, matching make_dataloaders.get_dataset exactly."""
-    if model_name in ('vit', 'vgg16'):
+    if model_name in ('vit', 'vgg16', 'vgg16_bn'):
         return 224, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225), None
     if data_name == 'tinyimagenet':
         return 64, (0.4802, 0.4481, 0.3975), (0.2770, 0.2691, 0.2821), 8
@@ -321,7 +321,7 @@ def _get_coun_layer(model, model_name):
         return model.features[9]
     elif model_name == 'vit':
         return model.vit.blocks[-1]
-    elif model_name == 'vgg16':
+    elif model_name in ('vgg16', 'vgg16_bn'):
         # fc7 (classifier[3], a Linear(4096, 4096)) - already a flat [B, 4096]
         # output, unlike resnet/vit's [B,C,H,W]/[B,N,D] outputs, so coun()'s
         # .view(batch_size, -1) call on it is already a no-op reshape (no
@@ -583,7 +583,7 @@ def run_seed(seed, forget_class, data_root, checkpoint_path, num_epochs, batch_s
 COUN_VALID_PAIRINGS = {
     'cifar10':      ['allcnn', 'resnet18', 'resnet50'],
     'cifar100':     ['allcnn', 'resnet', 'resnet50', 'resnet18', 'vit'],
-    'tinyimagenet': ['resnet', 'resnet50', 'resnet18', 'vit', 'vgg16'],
+    'tinyimagenet': ['resnet', 'resnet50', 'resnet18', 'vit', 'vgg16', 'vgg16_bn'],
 }
 
 

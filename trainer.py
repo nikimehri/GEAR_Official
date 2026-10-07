@@ -109,7 +109,8 @@ def train(model, data_loader, criterion, optimizer, loss_mode, device='cpu'):
 
 
 def train_save_model(train_loader, val_loader, model_name, optim_name, learning_rate, num_epochs, device, path, dataset=None, relearning=False, unlearned_model=None, data_name=None, forget_class=None,
-                      momentum=0.9, weight_decay=1e-4, lr_schedule='cosine', lr_milestones=None, lr_gamma=0.1):
+                      momentum=0.9, weight_decay=1e-4, lr_schedule='cosine', lr_milestones=None, lr_gamma=0.1,
+                      save_final_only=False):
     start = time.time()
     losses = []
     accuracies = []
@@ -150,11 +151,11 @@ def train_save_model(train_loader, val_loader, model_name, optim_name, learning_
         model = nn.DataParallel(model)
         model.to(device)
 
-    elif model_name == 'vgg16':
+    elif model_name in ('vgg16', 'vgg16_bn'):
         # Pretrained-on-ImageNet, fixed-224x224-input architecture - like vit,
         # the 224x224+ImageNet-normalization resize happens in
         # make_dataloaders.get_dataset, not here.
-        model = VGG(num_classes=num_classes)
+        model = VGG(num_classes=num_classes, batch_norm=(model_name == 'vgg16_bn'))
         model = nn.DataParallel(model)
         model.to(device)
 
@@ -194,7 +195,7 @@ def train_save_model(train_loader, val_loader, model_name, optim_name, learning_
 
     criterion = loss_picker('cross', train_loader=train_loader, device=device, forget_class=forget_class, num_classes=num_classes)
     optimizer = optimizer_picker(optim_name, model.parameters(), lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
-    _scheduler_eligible = model_name in ('resnet', 'resnet50', 'resnet18', 'vgg16', 'vit', 'distilbert')
+    _scheduler_eligible = model_name in ('resnet', 'resnet50', 'resnet18', 'vgg16', 'vgg16_bn', 'vit', 'distilbert')
     if not _scheduler_eligible:
         scheduler = None
     elif lr_schedule == 'step':
@@ -223,10 +224,11 @@ def train_save_model(train_loader, val_loader, model_name, optim_name, learning_
         if acc>=best_acc:
             best_acc = acc
 
-        print('SAVING')
-        print(f'current acc = {acc}')
-        print(f'best acc = {best_acc}')
-        torch.save(model, f'{path}{epo+1}.pth')
+        if not save_final_only:
+            print('SAVING')
+            print(f'current acc = {acc}')
+            print(f'best acc = {best_acc}')
+            torch.save(model, f'{path}{epo+1}.pth')
 
         if (epo+1) == num_epochs:
             print('SAVING LAST EPOCH')
@@ -329,14 +331,16 @@ def train_engine(args, train_remain_loader, val_remain_loader, train_loader, val
         ori_model, num_classes, _ = train_save_model(train_loader, val_loader, args.model_name, args.optim_name, args.lr,
                                      args.epoch, device, model_name + "_original_model_", dataset=dataset, data_name=args.data_name, forget_class=None,
                                      momentum=args.momentum, weight_decay=args.weight_decay,
-                                     lr_schedule=args.lr_schedule, lr_milestones=args.lr_milestones, lr_gamma=args.lr_gamma)
+                                     lr_schedule=args.lr_schedule, lr_milestones=args.lr_milestones, lr_gamma=args.lr_gamma,
+                                     save_final_only=args.save_final_only)
 
         print('\noriginal model acc:\n', test(ori_model, val_loader, idx_to_class, num_classes, device))
 
         retrain_model, _, _ = train_save_model(train_remain_loader, val_remain_loader, args.model_name, args.optim_name,
                                         args.lr, args.epoch, device, model_name + "_retrain_model_" + 'class_' + str(args.forget_class) + '_', dataset=dataset, data_name=args.data_name, forget_class=args.forget_class,
                                         momentum=args.momentum, weight_decay=args.weight_decay,
-                                        lr_schedule=args.lr_schedule, lr_milestones=args.lr_milestones, lr_gamma=args.lr_gamma)
+                                        lr_schedule=args.lr_schedule, lr_milestones=args.lr_milestones, lr_gamma=args.lr_gamma,
+                                        save_final_only=args.save_final_only)
 
         print('\nretrain model acc:\n', test(retrain_model, val_remain_loader, idx_to_class, num_classes, device))
         return ori_model, retrain_model, None
@@ -348,7 +352,8 @@ def train_engine(args, train_remain_loader, val_remain_loader, train_loader, val
         retrain_model, _, time_retrain = train_save_model(train_remain_loader, val_remain_loader, args.model_name, args.optim_name,
                                         args.lr, args.epoch, device,  model_name + "_retrain_" + exp_name + '_' , dataset=dataset, data_name=args.data_name, forget_class=args.forget_class,
                                         momentum=args.momentum, weight_decay=args.weight_decay,
-                                        lr_schedule=args.lr_schedule, lr_milestones=args.lr_milestones, lr_gamma=args.lr_gamma)
+                                        lr_schedule=args.lr_schedule, lr_milestones=args.lr_milestones, lr_gamma=args.lr_gamma,
+                                        save_final_only=args.save_final_only)
 
         print('\nretrain model acc:\n', test(retrain_model, val_remain_loader, idx_to_class, num_classes, device))
 

@@ -700,8 +700,8 @@ def load_model(model_type, num_classes, data_name, n_channels=3, size=32, batch_
     elif model_type == 'resnet18':
         cifar_stem = data_name in ('cifar10', 'cifar100')
         model = CustomResNet(num_classes=num_classes, cifar_stem=cifar_stem, arch='resnet18')
-    elif model_type == 'vgg16':
-        model = VGG(num_classes=num_classes)
+    elif model_type in ('vgg16', 'vgg16_bn'):
+        model = VGG(num_classes=num_classes, batch_norm=(model_type == 'vgg16_bn'))
     elif model_type == 'vit':
         if data_name in ('cifar100', 'tinyimagenet'):
             model = ViT(num_classes=num_classes)

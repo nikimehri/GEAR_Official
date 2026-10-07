@@ -421,7 +421,7 @@ def _classifier_in_features(model: nn.Module, arch: str) -> int:
     its own)."""
     if arch in ('resnet', 'resnet50', 'resnet18'):
         return model.classifier[1].in_features  # Sequential(Dropout, Linear)
-    if arch == 'vgg16':
+    if arch in ('vgg16', 'vgg16_bn'):
         return model.vgg.classifier[6].in_features
     if arch == 'vit':
         return model.vit.head.in_features
@@ -436,7 +436,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Linear-probe evaluation for a GEAR checkpoint")
     p.add_argument('--checkpoint', type=str, required=True, help="Path to the model checkpoint to probe")
     p.add_argument('--arch', type=str, required=True,
-                   choices=['AllCNN', 'allcnn', 'resnet', 'resnet50', 'resnet18', 'vgg16', 'vit', 'distilbert'],
+                   choices=['AllCNN', 'allcnn', 'resnet', 'resnet50', 'resnet18', 'vgg16', 'vgg16_bn', 'vit', 'distilbert'],
                    help="Architecture of the checkpoint (resolves its test-time transform/classifier shape - "
                         "the checkpoint itself is always loaded as a full model object, --arch is never used "
                         "to reconstruct one from a state_dict)")
