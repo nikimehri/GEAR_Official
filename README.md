@@ -308,6 +308,8 @@ python baselines/baseline_main.py \
 - `cu` — CU (Contrastive Unlearning, Lee et al. 2024, [arXiv:2401.10458](https://arxiv.org/abs/2401.10458) — **not the same paper as `coun` above**, despite the similar name): a "reversed" InfoNCE-style contrastive loss operating directly on each model's `get_embedding(x)` output (no hooked intermediate layer, so it's architecture-agnostic with no per-model special-casing at all) — pushes each forget sample's embedding away from same-class retain embeddings and toward different-class ones, combined with a plain retain-set cross-entropy term. No frozen reference/teacher or retrain/gold model needed. `--cu_epochs`/`--cu_lr`/`--cu_temp`/`--cu_lambda_ul`/`--cu_lambda_ce`/`--cu_omega` tune it. The paper doesn't state numeric hyperparameter values, so the defaults are this reimplementation's own reasonable choices, documented as such in `baselines/cu.py`
 - `eval_orig` — not an unlearning method: evaluates `--retrain_model` itself (reported as "Retrain") through the same `all_readouts()` every other method uses. Useful as a gold-standard reference row — its Retain Adjacent/Remote Accuracy is the practical ceiling other methods are compared against, and its AIN (retrain evaluated against itself as both the "unlearned" and gold-standard model) should land at ≈1.0, a sanity check that AIN is calibrated correctly
 - `cheng_unlearn` — the unlearning method from Cheng et al., "Machine Unlearning under Retain-Forget Entanglement" ([arXiv:2603.26569](https://arxiv.org/abs/2603.26569)) — the same paper Retain Adjacent/Remote Accuracy itself comes from, so this is a natural comparison point, though its own score on that metric has a built-in home-field advantage (its loss function directly targets the quantity the metric measures — see `baselines/cheng_unlearn.py`'s docstring). Two stages: an augmented-Lagrangian pass that pushes up forget-set loss while constraining mean loss on the retain-**remote** split to stay near the original model's value, then a Wasserstein-2-regularized fine-tuning pass where the retain-**adjacent** gradient is projected orthogonal to the forget/remote gradients before being applied. **Only runs on datasets with a known class hierarchy (`cifar100`/`tinyimagenet`, not `cifar10`)** — unlike every other baseline, it needs the Retain Adjacent/Remote split as an actual training input, not just an evaluation metric, so there's nothing for it to do on `cifar10`; it logs a message and skips rather than erroring. `--cheng_stage1_epochs`/`--cheng_stage1_lr`/`--cheng_mu`/`--cheng_gamma`/`--cheng_c`/`--cheng_stage2_epochs`/`--cheng_stage2_lr`/`--cheng_momentum`/`--cheng_alpha` tune it. Reimplemented from the paper's equations and reference-code structure (no LICENSE file upstream, and the exact Stage 2 gradient-combination rule wasn't independently verified against the reference code — documented as a best-effort reading in the module docstring, not a guaranteed-exact match). The most compute-expensive baseline in this repo (two training stages, and Stage 2 computes three separate backward passes per step) — optional to run
+- `salun` — SalUn (Saliency Unlearning, Fan et al., ICLR 2024 Spotlight, [OPTML-Group/Unlearn-Saliency](https://github.com/OPTML-Group/Unlearn-Saliency), MIT licensed). Computes a global top-k-by-magnitude saliency mask from the forget set's loss gradient (`--salun_mask_ratio`, default 0.5, fraction of all parameters treated as salient), then fine-tunes on randomly-relabeled-forget + true-labeled-retain samples, restricting gradient updates to salient weights only — masked-out weights are forced back to their exact pre-unlearning value (including their SGD momentum buffer) after every step, so residual momentum can't leak updates into supposedly-frozen parameters. `--salun_epochs`/`--salun_lr`/`--salun_momentum`/`--salun_weight_decay`/`--salun_lr_decay_epochs` tune it. See `baselines/salun.py`'s module docstring for the two documented simplifications from the reference code (neither changes the result)
+- `bad_teacher` — Bad Teacher (Chundawat et al., AAAI 2023, "Can Bad Teaching Induce Forgetting?", [vikram2000b/bad-teaching-unlearning](https://github.com/vikram2000b/bad-teaching-unlearning), MIT licensed). Dual-teacher knowledge distillation: the student imitates the original (frozen, "competent") model on retain samples and a fresh, randomly-initialized ("incompetent") model of the same architecture on forget samples, via one KL loss per batch blended by each sample's forget/retain membership. Needed one real adaptation beyond a literal port — this repo's pretrained architectures (ResNet/VGG/ViT) always load ImageNet weights in their constructors with no way to skip it, so `baselines/bad_teacher.py`'s `reinitialize_weights()` scrambles any architecture back to a genuinely random init before using it as the incompetent teacher. `--bt_epochs`/`--bt_lr`/`--bt_temperature` tune it
 
 Every baseline also reports Retain Adjacent/Remote Accuracy (`'N/A'` unless
 `--data_name` is `cifar100`/`tinyimagenet`/`20newsgroups`) automatically, and AIN when
@@ -322,7 +324,24 @@ into every `all_readouts()` call (MIA's cross-validation split, AIN's cache
 key) — vary it across runs for genuinely independent multi-seed replicates,
 same as `main.py`'s `--seed`.
 
-Results are written to `{name}_{data_name}_results.json`.
+**Validation split**: `--val_fraction` (default 0.1, matching `main.py`'s
+own default) holds out a seeded validation split from the training set,
+carved off before any forget/remain splitting — every baseline's own
+training data (the retain set it fine-tunes/distills on, SSD's "full
+original trainset" Fisher computation, etc.) comes from the remaining
+90% only, never from the held-out validation portion. The same `--seed`
+produces the same train/val partition in both `main.py` and
+`baseline_main.py`. `all_readouts()` reports validation-set accuracy
+(`Val Acc`/`Val Forget Acc`/`Val Remain Acc`) alongside the existing
+test-set metrics, for every method.
+
+Results are written to **both** `{name}_{data_name}_results.json` (one
+JSON blob, unchanged format) **and** `{name}_full_report.csv` (one row per
+method call, every metric as its own column — run time, forget/retain/val/
+test accuracy, both MIA types, AIN, Retain Adjacent/Remote Accuracy, t-SNE
+plot path when `--tsne` is passed) — the same schema `main.py`'s own
+`{name}.csv` uses, so GEAR and baseline results sit in directly comparable
+rows.
 
 **CoUn's standalone CLI**: for the `lambda_scale`/`temp` hyperparameter
 sweep specifically (too expensive to run inline alongside every other
@@ -365,8 +384,10 @@ neither is a portability gap, both are properties of the algorithms themselves:
 | coun | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | N/A |
 | cu | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | cheng_unlearn | N/A | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| salun | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| bad_teacher | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-`finetune`/`neggrad`/`delete`/`ssd` are architecture-agnostic by
+`finetune`/`neggrad`/`delete`/`ssd`/`salun`/`bad_teacher` are architecture-agnostic by
 construction (they only ever touch `model.parameters()`/`model(x)`). `cu`
 is likewise architecture-agnostic, but for a different reason — it operates
 on each model's own `get_embedding(x)` method rather than a hooked

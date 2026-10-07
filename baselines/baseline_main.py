@@ -11,6 +11,8 @@ from ssd import ssd_unlearn
 from coun import get_coun_datasets, coun_unlearn, COUN_VALID_PAIRINGS
 from cu import cu_unlearn
 from cheng_unlearn import cheng_unlearn
+from salun import salun_unlearn
+from bad_teacher import bad_teacher_unlearn
 from baseline_utils import *
 from models import *
 import class_hierarchy
@@ -115,6 +117,14 @@ def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, s
     _, forget_acc = eval(model=model, data_loader=final_forget_loader, device=device, name='test set forget class')
     _, remain_acc = eval(model=model, data_loader=final_remain_loader, device=device, name='test set remain class')
 
+    # Validation-set accuracy (val_loader/val_forget_loader/val_remain_loader
+    # are module-level globals set by the single-experiment setup block,
+    # same convention as dataset/device/etc. above) - the held-out split
+    # every baseline's own training data excludes, see that block's
+    # val_fraction split.
+    _, val_acc = eval(model=model, data_loader=val_loader, device=device, name='val set all class')
+    _, val_forget_acc = eval(model=model, data_loader=val_forget_loader, device=device, name='val set forget class')
+    _, val_remain_acc = eval(model=model, data_loader=val_remain_loader, device=device, name='val set remain class')
 
     per_class_accs = test(model, test_loader, idx_to_class, num_classes, device)
 
@@ -179,6 +189,9 @@ def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, s
         'Forget Acc': float(forget_acc),
         'Remain Acc': float(remain_acc),
         'Test Acc': float(test_acc),
+        'Val Acc': float(val_acc),
+        'Val Forget Acc': float(val_forget_acc),
+        'Val Remain Acc': float(val_remain_acc),
         'MIA Confidence Mean': float(np.mean(MIA)),
         'MIA Confidence Std': float(np.std(MIA)),
         'MIA Loss-Threshold AUC': lt_mia_result['mia_auc'],
@@ -193,6 +206,9 @@ def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, s
         test_error=float(test_acc),
         forget_error=float(forget_acc),
         retain_error=float(remain_acc),
+        val_error=float(val_acc),
+        val_forget_error=float(val_forget_acc),
+        val_retain_error=float(val_remain_acc),
         retain_adjacent_acc=retain_adjacent_acc,
         retain_remote_acc=retain_remote_acc,
         AIN=ain_score,
@@ -246,6 +262,12 @@ if __name__ == '__main__':
                              'Vary this across runs for genuinely independent stochastic replicates.')
     parser.add_argument('--name', type=str, default='baseline',
                         help='Experiment name prefix for output files')
+    parser.add_argument('--val_fraction', type=float, default=0.1,
+                        help='Fraction of the training set held out as a validation split '
+                             '(single-experiment mode only), seeded by --seed - matches main.py/'
+                             "GEAR's own val_fraction convention and default. Every baseline's "
+                             'own training data (train_remain_loader etc.) is built from the '
+                             'remaining 1-val_fraction portion, not the full training set.')
     parser.add_argument('--method', type=str, default='scrub',
                         help='Comma-separated list of methods to run, e.g. scrub or finetune,scrub')
     # SCRUB + CL+ES arguments
@@ -367,7 +389,25 @@ if __name__ == '__main__':
     parser.add_argument('--cheng_alpha', type=float, default=0.5,
                         help='Stage 2 W2-penalty blend weight (alpha).')
 
+    # --- SalUn arguments (see baselines/salun.py) ---
+    parser.add_argument('--salun_mask_ratio', type=float, default=0.5,
+                        help='Fraction of parameters (globally, by |forget-loss gradient|) treated '
+                             'as salient and allowed to update during unlearning.')
+    parser.add_argument('--salun_epochs', type=int, default=10, help='Random-labeling fine-tuning epochs.')
+    parser.add_argument('--salun_lr', type=float, default=0.01, help='SGD learning rate.')
+    parser.add_argument('--salun_momentum', type=float, default=0.9, help='SGD momentum.')
+    parser.add_argument('--salun_weight_decay', type=float, default=5e-4, help='SGD weight decay.')
+    parser.add_argument('--salun_lr_decay_epochs', type=str, default='5,8',
+                        help='Comma-separated epoch numbers at which LR drops by 0.1 (MultiStepLR).')
+
+    # --- Bad Teacher arguments (see baselines/bad_teacher.py) ---
+    parser.add_argument('--bt_epochs', type=int, default=1, help='Dual-teacher distillation epochs.')
+    parser.add_argument('--bt_lr', type=float, default=1e-4, help='Adam learning rate.')
+    parser.add_argument('--bt_temperature', type=float, default=1.0,
+                        help='Softmax temperature for both teachers and the student in the KL loss.')
+
     args, _ = parser.parse_known_args()
+    args.salun_lr_decay_epochs = tuple(int(e) for e in args.salun_lr_decay_epochs.split(','))
 
     BASELINE_DIR = f'{MODEL_CHECKPOINT_ROOT}/baseline_models'
 
@@ -407,7 +447,23 @@ if __name__ == '__main__':
         oculoplastics  = single_exp['oculoplastics']
         data_path      = single_exp['data_path']
 
-        trainset, testset, dataset = get_dataset(data_name, data_path, model_name=model_type)
+        trainset_full, testset, dataset = get_dataset(data_name, data_path, model_name=model_type)
+
+        # Held-out validation split (seeded by --seed), carved off BEFORE any
+        # forget/remain splitting - every baseline's own training data
+        # (train_remain_loader, full_train_loader, etc.) is built from the
+        # remaining (1 - val_fraction) trainset below, never from valset, so
+        # no baseline trains on data it's also validated against. Matches
+        # main.py/GEAR's own val_fraction convention and default exactly, so
+        # the same --seed produces the same train/val partition in both
+        # entry points.
+        val_size = int(len(trainset_full) * args.val_fraction)
+        train_size = len(trainset_full) - val_size
+        split_generator = torch.Generator().manual_seed(seed)
+        trainset, valset = torch.utils.data.random_split(
+            trainset_full, [train_size, val_size], generator=split_generator
+        )
+
         train_loader, test_loader = get_dataloader(trainset, testset, batch_size, device=device)
         num_classes, idx_to_class = set_num_classes(data_name, dataset)
         total_forget_class = sum(1 for _, target in dataset if target == forget_class)
@@ -422,9 +478,13 @@ if __name__ == '__main__':
             selective_unlearning=SELECTIVE_UNLEARNING)
 
         final_forget_loader, final_remain_loader = get_forget_loader(testset, forget_class)
+        val_forget_loader, val_remain_loader = get_forget_loader(valset, forget_class)
+        val_loader = DataLoader(valset, batch_size=batch_size, shuffle=False)
         # SSD needs the full, undivided original trainset (forget+retain
         # combined, not just the retain split) - trainset (built above,
-        # before any forget/remain split) is exactly that.
+        # before any forget/remain split, but AFTER the val split) is
+        # exactly that; it deliberately excludes the held-out validation
+        # portion, same as every other baseline's training data.
         full_train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
 
         for unlearn_type in methods_single:
@@ -588,6 +648,30 @@ if __name__ == '__main__':
                     if args.save_checkpoints:
                         save_baseline_checkpoint(model_cheng, 'cheng_unlearn', model_type, data_name, forget_class, seed, BASELINE_DIR)
                     readouts[unlearn_type][data_name] = all_readouts(model_cheng, test_loader, final_forget_loader, final_remain_loader, name='ChengUnlearn', seed=seed, unlearn_time=_elapsed)
+            elif unlearn_type == 'salun':
+                print("Forgetting by SalUn:")
+                _t0 = time.time()
+                model_salun = salun_unlearn(
+                    model, train_forget_loader, train_remain_loader, device, num_classes,
+                    mask_ratio=args.salun_mask_ratio, unlearn_epochs=args.salun_epochs,
+                    lr=args.salun_lr, momentum=args.salun_momentum, weight_decay=args.salun_weight_decay,
+                    lr_decay_epochs=args.salun_lr_decay_epochs,
+                )
+                _elapsed = time.time() - _t0
+                if args.save_checkpoints:
+                    save_baseline_checkpoint(model_salun, 'salun', model_type, data_name, forget_class, seed, BASELINE_DIR)
+                readouts[unlearn_type][data_name] = all_readouts(model_salun, test_loader, final_forget_loader, final_remain_loader, name='SalUn', seed=seed, unlearn_time=_elapsed)
+            elif unlearn_type == 'bad_teacher':
+                print("Forgetting by Bad Teacher:")
+                _t0 = time.time()
+                model_bt = bad_teacher_unlearn(
+                    model, train_forget_loader, train_remain_loader, model_type, num_classes, data_name, device,
+                    epochs=args.bt_epochs, lr=args.bt_lr, temperature=args.bt_temperature,
+                )
+                _elapsed = time.time() - _t0
+                if args.save_checkpoints:
+                    save_baseline_checkpoint(model_bt, 'bad_teacher', model_type, data_name, forget_class, seed, BASELINE_DIR)
+                readouts[unlearn_type][data_name] = all_readouts(model_bt, test_loader, final_forget_loader, final_remain_loader, name='BadTeacher', seed=seed, unlearn_time=_elapsed)
             elif unlearn_type == 'eval_orig':
                 # Not an unlearning method - evaluates --retrain_model itself
                 # as the gold-standard reference row. No unlearning happens,
