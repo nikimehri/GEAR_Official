@@ -19,14 +19,17 @@ import copy
 CFK_EUK_SUPPORTED_MODELS = {'allcnn', 'resnet', 'resnet50', 'resnet18', 'vit', 'distilbert'}
 
 
-def cfk_unlearn(model_cfk, r_loader, model_name):
+def cfk_unlearn(model_cfk, r_loader, model_name, cfk_lr=0.01, cfk_epochs=10, lr_decay_epochs=(10, 15, 20)):
     """CF-k (Catastrophic Forgetting-k) baseline: freezes every parameter
     except the last conv/residual block, then fine-tunes only that block on
     the remain set. The idea is that forgetting is concentrated in the last
-    block, so retraining just it approximates full retraining cheaply."""
-    lr_decay_epochs = [10,15,20]
-    cfk_lr = 0.01
-    cfk_epochs = 10
+    block, so retraining just it approximates full retraining cheaply.
+
+    cfk_lr/cfk_epochs/lr_decay_epochs were hardcoded constants until a
+    hyperparameter search needed them exposed (see baselines/hpo_search.py)
+    - the defaults here are exactly the old hardcoded values, so every
+    existing caller is unaffected."""
+    lr_decay_epochs = list(lr_decay_epochs)
 
     for param in model_cfk.parameters():
         param.requires_grad_(False)
@@ -68,14 +71,17 @@ def cfk_unlearn(model_cfk, r_loader, model_name):
 
 
 
-def euk_unlearn(model, r_loader, model_name):
+def euk_unlearn(model, r_loader, model_name, euk_lr=0.01, euk_epochs=10, lr_decay_epochs=(10, 15, 20)):
     """EU-k (Exact Unlearning-k) baseline: like CF-k, but first resets the
     last block's weights back to model_initial before fine-tuning it on the
     remain set - intended to more aggressively remove whatever that block
-    learned before retraining it fresh."""
-    lr_decay_epochs = [10,15,20]
-    euk_lr = 0.01
-    euk_epochs = 10
+    learned before retraining it fresh.
+
+    euk_lr/euk_epochs/lr_decay_epochs were hardcoded constants until a
+    hyperparameter search needed them exposed (see baselines/hpo_search.py)
+    - the defaults here are exactly the old hardcoded values, so every
+    existing caller is unaffected."""
+    lr_decay_epochs = list(lr_decay_epochs)
     model_initial = model
     model_euk = copy.deepcopy(model)
 

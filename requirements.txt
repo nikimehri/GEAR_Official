@@ -26,6 +26,9 @@ networkx==3.6.1
 # required to train, unlearn, or evaluate.
 nltk==3.10.3
 numpy==2.4.2
+# Hyperparameter search (baselines/hpo_search.py) - not required to train,
+# unlearn, or evaluate otherwise.
+optuna==5.0.0
 packaging==26.0
 pandas==3.0.0
 pillow==12.1.0
