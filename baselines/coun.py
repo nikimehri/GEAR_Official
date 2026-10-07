@@ -321,6 +321,12 @@ def _get_coun_layer(model, model_name):
         return model.features[9]
     elif model_name == 'vit':
         return model.vit.blocks[-1]
+    elif model_name == 'vgg16':
+        # fc7 (classifier[3], a Linear(4096, 4096)) - already a flat [B, 4096]
+        # output, unlike resnet/vit's [B,C,H,W]/[B,N,D] outputs, so coun()'s
+        # .view(batch_size, -1) call on it is already a no-op reshape (no
+        # CLS-token-style special-casing needed, unlike the vit branch).
+        return model.vgg.classifier[3]
     else:
         raise NotImplementedError(f"COUN layer selection not implemented for model_name='{model_name}'")
 
@@ -575,9 +581,9 @@ def run_seed(seed, forget_class, data_root, checkpoint_path, num_epochs, batch_s
 # data_name -> allowed model_name values, mirroring params.py's VALID_PAIRINGS
 # (lowercase model names here, matching baseline_utils.load_model's convention).
 COUN_VALID_PAIRINGS = {
-    'cifar10':      ['allcnn'],
+    'cifar10':      ['allcnn', 'resnet18', 'resnet50'],
     'cifar100':     ['allcnn', 'resnet', 'resnet50', 'resnet18', 'vit'],
-    'tinyimagenet': ['resnet', 'resnet50', 'resnet18', 'vit'],
+    'tinyimagenet': ['resnet', 'resnet50', 'resnet18', 'vit', 'vgg16'],
 }
 
 

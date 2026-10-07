@@ -16,6 +16,31 @@ Usage (one baseline):
 Usage (every baseline this script knows how to search):
     ... --method all ...
 
+Multi-config workflow (base config + warm-started follow-ups)
+---------------------------------------------------------------
+Run the base config first, with the full trial budget and no warm start:
+    python baselines/hpo_search.py --data_name cifar10 --model_name resnet18 \\
+        ... --n_trials 35 --name hpo_cifar10_resnet18
+
+This writes hpo_cifar10_resnet18_all_baselines_best.csv, which records each
+baseline's winning Optuna-native parameters (not the full hyperparameters
+dict - see "optuna_params" below) alongside its metrics. Every other config
+then warm-starts from that file with a smaller budget:
+    python baselines/hpo_search.py --data_name cifar100 --model_name resnet50 \\
+        ... --n_trials 15 --warm_start_csv hpo_cifar10_resnet18_all_baselines_best.csv \\
+        --name hpo_cifar100_resnet50
+
+For each method, this enqueues the base run's winning parameters as trial 0
+of the follow-up's budget (optuna.study.enqueue_trial - the standard Optuna
+warm-start mechanism), so the 15-trial budget includes that replay, not 15
+trials on top of it. If a method has no row in --warm_start_csv (e.g. it was
+skipped as inapplicable on the base config - see is_applicable()), that
+method just starts cold on this config instead; this is printed, not an
+error. Hyperparameter names are shared across configs for the same method
+(the search space is defined per-method, not per-config), so no translation
+is needed between configs - only the search budget and the model/dataset
+checkpoints differ.
+
 Design
 ------
 Selection rule (applied EXACTLY as specified, as a post-hoc filter over the
@@ -49,15 +74,25 @@ is set, which is the actual, correct way to use this feature.
 
 Every trial still gets a full baseline_main.all_readouts() report - a row
 in {name}_{method}_full_report.csv (test AND validation metrics, both MIA
-types, AIN if --compute_ain, Retain Adjacent/Remote Accuracy) plus its own
-t-SNE plot, exactly like every other baseline run - the search doesn't
-skip any of that, it just additionally uses two of those columns
-(val_forget_error/val_retain_error) to drive the search and the selection
-rule.
+types, AIN if --compute_ain, Retain Adjacent/Remote Accuracy) exactly like
+every other baseline run - the search doesn't skip any of that, it just
+additionally uses two of those columns (val_forget_error/val_retain_error)
+to drive the search and the selection rule.
 
-Output per baseline (in addition to the per-trial full_report.csv/t-SNE):
+t-SNE is generated ONCE per baseline, for the final SELECTED winner only -
+not for every trial (420 trials x a CPU-only full-test-set t-SNE embedding
+was measured as a real, non-trivial aggregate cost at this search's scale;
+see --tsne's help text for the exact trade-off). This means the winning
+trial's model is re-created from scratch after the study completes (the
+search itself never keeps a trial's unlearned model around once it's been
+scored, to avoid holding many ResNet50/ViT-scale models in memory across a
+15-35 trial budget) - see run_study()'s "winner-only t-SNE" section for why
+this re-run's OWN metrics are never treated as authoritative, only its plot.
+
+Output per baseline (in addition to the per-trial full_report.csv):
   {name}_{method}_best.csv   - one row per trial (hyperparameters + metrics
                                + whether it was selected), sorted best-first
+  {name}_{method}_WINNER_TSNE_ONLY_tsne.png - the winner's t-SNE plot
 Output once, after every requested baseline has been searched:
   {name}_all_baselines_best.csv - one row per baseline, its chosen
                                   hyperparameters (JSON-encoded, since each
@@ -373,6 +408,13 @@ def make_objective(method, args, ctx):
         trial.set_user_attr('test_forget_acc', result['forget_error'])
         trial.set_user_attr('test_retain_acc', result['retain_error'])
         trial.set_user_attr('hyperparams', hp)
+        # trial.params holds ONLY the values from actual trial.suggest_*
+        # calls - unlike hp above, it excludes derived-not-suggested entries
+        # (e.g. cfk/euk/salun's lr_decay_epochs, computed from a suggested
+        # epoch count, not suggested itself). This is what warm-starting a
+        # later config's study.enqueue_trial() needs: enqueueing hp directly
+        # would hand Optuna keys no suggest_* call will ever request.
+        trial.set_user_attr('optuna_params', dict(trial.params))
         trial.set_user_attr('run_time', elapsed)
 
         penalty = PENALTY_WEIGHT * max(0.0, val_forget_acc - args.forget_acc_threshold)
@@ -401,6 +443,19 @@ def select_best_trial(study, forget_acc_threshold):
 # PER-BASELINE SEARCH + SUMMARY CSV
 # =============================================================================
 
+def _load_warm_start_params(warm_start_csv, method):
+    """Reads a prior run's {name}_all_baselines_best.csv and returns the
+    winning Optuna-native params dict for `method`, or None if that method
+    has no row there (e.g. it was skipped as inapplicable on that config -
+    see is_applicable())."""
+    import csv as csv_mod
+    with open(warm_start_csv, newline='') as f:
+        for row in csv_mod.DictReader(f):
+            if row['method'] == method:
+                return json.loads(row['optuna_params'])
+    return None
+
+
 def run_study(method, args, ctx):
     print(f"\n{'='*70}\n  Searching: {method}  ({args.n_trials} trials)\n{'='*70}")
 
@@ -408,17 +463,32 @@ def run_study(method, args, ctx):
     study = optuna.create_study(direction='maximize', sampler=sampler,
                                 study_name=f"{args.name}_{method}")
 
-    # Give all_readouts a method-specific CSV prefix so this method's 35
-    # trial rows accumulate into their own full_report.csv, not mixed with
-    # other baselines'.
+    if args.warm_start_csv:
+        warm_params = _load_warm_start_params(args.warm_start_csv, method)
+        if warm_params is not None:
+            study.enqueue_trial(warm_params, skip_if_exists=True)
+            print(f"[hpo_search] {method}: warm-started from {args.warm_start_csv} "
+                  f"(params={warm_params}) - this consumes trial 0 of the {args.n_trials}-trial budget.")
+        else:
+            print(f"[hpo_search] {method}: no row for this method in {args.warm_start_csv} "
+                  f"(likely skipped there as inapplicable) - starting cold.")
+
+    # Give all_readouts a method-specific CSV prefix so this method's trial
+    # rows accumulate into their own full_report.csv, not mixed with other
+    # baselines'. tsne is forced off for every trial during the search
+    # itself - only the final selected winner gets one, generated below
+    # after the study completes (see module docstring for why).
     args.name_for_reports = f"{args.name}_{method}"
     _orig_name = bm.args.name
+    _orig_tsne = bm.args.tsne
     bm.args.name = args.name_for_reports
+    bm.args.tsne = False
 
     try:
         study.optimize(make_objective(method, args, ctx), n_trials=args.n_trials)
     finally:
         bm.args.name = _orig_name
+        bm.args.tsne = _orig_tsne
 
     best_trial, effective_threshold = select_best_trial(study, args.forget_acc_threshold)
     if best_trial is None:
@@ -442,6 +512,7 @@ def run_study(method, args, ctx):
             'Test Retain Acc': t.user_attrs['test_retain_acc'],
             'Run Time': t.user_attrs['run_time'],
             'Hyperparameters': json.dumps(t.user_attrs['hyperparams']),
+            'Optuna Params': json.dumps(t.user_attrs['optuna_params']),
         })
     import csv as csv_mod
     summary_path = f"{args.name}_{method}_best.csv"
@@ -452,6 +523,37 @@ def run_study(method, args, ctx):
     print(f"[hpo_search] {method}: wrote {summary_path} ({len(rows)} trials, "
           f"winner=trial {best_trial.number})")
 
+    # --- Winner-only t-SNE: one extra re-run, for the plot only -----------
+    # This re-creates the winning trial's model from scratch (fresh original
+    # checkpoint + the winning hyperparameters) and calls all_readouts() one
+    # more time with tsne forced on. Its OWN accuracy/MIA numbers are NOT
+    # used anywhere above or in the overall CSV - the authoritative metrics
+    # are the ones already recorded from the trial's original run. They can,
+    # in principle, differ slightly: torch's global RNG has advanced by an
+    # unknown amount since the winning trial originally ran (every other
+    # trial/baseline that ran in between also consumed RNG state), so this
+    # replay isn't guaranteed bit-identical. Re-running once per baseline
+    # (rather than caching every trial's unlearned model in memory just in
+    # case it wins, which would be expensive at ResNet50/ViT scale across a
+    # 15-35 trial budget) is the accepted trade-off for a winner-only plot.
+    tsne_path = 'N/A'
+    if args.tsne:
+        winner_model = load_fresh_original_model(args, bm.device, ctx['num_classes'])
+        winner_model = call_unlearn(method, winner_model, args, ctx, best_trial.user_attrs['hyperparams'])
+        bm.args.name = args.name_for_reports
+        bm.args.tsne = True
+        try:
+            winner_result = bm.all_readouts(
+                winner_model, ctx['test_loader'], ctx['final_forget_loader'], ctx['final_remain_loader'],
+                seed=args.seed, name=f"{method}_WINNER_TSNE_ONLY",
+            )
+        finally:
+            bm.args.name = _orig_name
+            bm.args.tsne = _orig_tsne
+        tsne_path = winner_result['tsne_path']
+        print(f"[hpo_search] {method}: winner t-SNE saved to {tsne_path} "
+              f"(re-run for the plot only - the metrics recorded above remain authoritative)")
+
     return {
         'method': method,
         'n_trials_completed': len(rows),
@@ -461,6 +563,8 @@ def run_study(method, args, ctx):
         'test_forget_acc': best_trial.user_attrs['test_forget_acc'],
         'test_retain_acc': best_trial.user_attrs['test_retain_acc'],
         'hyperparameters': json.dumps(best_trial.user_attrs['hyperparams']),
+        'optuna_params': json.dumps(best_trial.user_attrs['optuna_params']),
+        'tsne_path': tsne_path,
     }
 
 
@@ -500,15 +604,27 @@ def build_arg_parser():
                    help="Comma-separated list of methods to search, or 'all' for every method "
                         f"in the registry ({', '.join(METHOD_REGISTRY.keys())}).")
     p.add_argument('--n_trials', type=int, default=35,
-                   help="Same trial budget used for every baseline searched in this invocation.")
+                   help="Same trial budget used for every baseline searched in this invocation. "
+                        "Recommended: 35 for the base config (no --warm_start_csv), 15 for every "
+                        "config warm-started from it (the enqueued warm-start trial counts toward "
+                        "this budget, so it isn't 15 trials on top of the warm start).")
+    p.add_argument('--warm_start_csv', type=str, default=None,
+                   help="Path to a prior run's {name}_all_baselines_best.csv. For each method being "
+                        "searched, enqueues that prior run's winning Optuna-native parameters as "
+                        "trial 0 (optuna.study.enqueue_trial) before the normal TPE budget runs. A "
+                        "method missing from that CSV (skipped as inapplicable there) just starts "
+                        "cold here instead - printed, not an error. See module docstring's "
+                        "'Multi-config workflow' section.")
     p.add_argument('--forget_acc_threshold', type=float, default=0.02,
                    help="x in the selection rule: among trials with val_forget_acc <= x, pick the "
                         "highest val_retain_acc. Falls back to the lowest observed val_forget_acc "
                         "if no trial clears this threshold.")
     p.add_argument('--gpu_id', type=int, default=0)
     p.add_argument('--name', type=str, required=True,
-                   help="Output prefix. Per-trial reports: {name}_{method}_full_report.csv and "
-                        "{name}_{method}_<trial>_tsne.png. Per-method summary: "
+                   help="Output prefix. Recommended: embed data_name/model_name (e.g. "
+                        "hpo_cifar10_resnet18) so different configs' outputs never collide. "
+                        "Per-trial reports: {name}_{method}_full_report.csv. Winner's t-SNE: "
+                        "{name}_{method}_WINNER_TSNE_ONLY_tsne.png. Per-method summary: "
                         "{name}_{method}_best.csv. Overall summary: {name}_all_baselines_best.csv.")
     p.add_argument('--compute_ain', action='store_true',
                    help="Also compute AIN per trial (expensive - see main.py's --compute_ain). "
@@ -517,12 +633,14 @@ def build_arg_parser():
     p.add_argument('--ain_lr', type=float, default=0.1)
     p.add_argument('--ain_max_epochs', type=int, default=10)
     p.add_argument('--ain_eval_interval', type=int, default=50)
-    p.add_argument('--tsne', action='store_true', default=True,
-                   help="Generate a t-SNE plot per trial. On by default for this script "
-                        "specifically (every other baseline entry point defaults this off) - a "
-                        "35-trial search already pays for every trial's forward passes, so the "
-                        "marginal cost of one extra embedding pass per trial is small by "
-                        "comparison, and the brief explicitly asks for a t-SNE per trial.")
+    p.add_argument('--tsne', dest='tsne', action='store_true', default=True,
+                   help="Generate a t-SNE plot for each baseline's final SELECTED winner (one plot "
+                        "per baseline, not one per trial - sklearn.manifold.TSNE is CPU-only "
+                        "regardless of GPU, and embedding the full test-set forget+remain split on "
+                        "every one of 15-35 trials x 12 baselines x 6 configs measured as a real, "
+                        "non-trivial aggregate cost without being needed for the selection rule "
+                        "itself). On by default; pass --no-tsne to skip even the winner's plot.")
+    p.add_argument('--no-tsne', dest='tsne', action='store_false')
     p.add_argument('--save_checkpoints', action='store_true',
                    help="Save every trial's unlearned model checkpoint. Off by default - a full "
                         "sweep (n_trials x n_methods) would otherwise write a very large number "

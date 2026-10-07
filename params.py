@@ -198,7 +198,7 @@ def get_parameters():
             raise ValueError("run_sota and specific_settings can only be set if --do_unlearning is true")
 
     VALID_PAIRINGS = {
-        'cifar10':      ['AllCNN', 'resnet18'],
+        'cifar10':      ['AllCNN', 'resnet18', 'resnet50'],
         'cifar100':     ['AllCNN', 'resnet', 'resnet50', 'resnet18', 'vgg16', 'vit'],
         'fashionmnist': ['AllCNN'],
         'tinyimagenet': ['resnet', 'resnet50', 'resnet18', 'vgg16', 'vit'],

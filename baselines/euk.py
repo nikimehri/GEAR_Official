@@ -16,7 +16,7 @@ import copy
 # partway through a multi-method --method run. Unlike COUN_VALID_PAIRINGS,
 # this isn't keyed by dataset: cfk/euk's branches only ever check
 # model_name, never data_name, so a flat set is the accurate representation.
-CFK_EUK_SUPPORTED_MODELS = {'allcnn', 'resnet', 'resnet50', 'resnet18', 'vit', 'distilbert'}
+CFK_EUK_SUPPORTED_MODELS = {'allcnn', 'resnet', 'resnet50', 'resnet18', 'vit', 'vgg16', 'distilbert'}
 
 
 def cfk_unlearn(model_cfk, r_loader, model_name, cfk_lr=0.01, cfk_epochs=10, lr_decay_epochs=(10, 15, 20)):
@@ -58,6 +58,17 @@ def cfk_unlearn(model_cfk, r_loader, model_name, cfk_lr=0.01, cfk_epochs=10, lr_
         # Same "last representational block only" convention, DistilBERT's
         # naming (self.encoder.transformer.layer, 6 blocks).
         for param in model_cfk.encoder.transformer.layer[-1].parameters():
+            param.requires_grad_(True)
+
+    elif model_name == 'vgg16':
+        # VGG has no ResNet-style stages or ViT-style block list - the
+        # closest analogue to "last representational block" is fc7's own
+        # Linear(4096, 4096) (classifier[3]; ReLU/Dropout at [4]/[5] have no
+        # parameters), the same layer models.VGG.get_embedding/
+        # forward_with_features already treat as this architecture's
+        # penultimate representation. The final Linear(4096, num_classes) at
+        # classifier[6] stays frozen, matching every other branch above.
+        for param in model_cfk.vgg.classifier[3].parameters():
             param.requires_grad_(True)
 
     else:
@@ -181,6 +192,15 @@ def euk_unlearn(model, r_loader, model_name, euk_lr=0.01, euk_epochs=10, lr_deca
             )
 
         for param in model_euk.encoder.transformer.layer[-1].parameters():
+            param.requires_grad_(True)
+
+    elif model_name == 'vgg16':
+        # Same reset-then-unfreeze pattern, same fc7 layer cfk_unlearn
+        # unfreezes above (classifier[3], a single Linear(4096, 4096)).
+        with torch.no_grad():
+            model_euk.vgg.classifier[3].load_state_dict(model_initial.vgg.classifier[3].state_dict())
+
+        for param in model_euk.vgg.classifier[3].parameters():
             param.requires_grad_(True)
 
     else:
