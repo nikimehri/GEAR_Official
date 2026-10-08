@@ -336,6 +336,16 @@ def train_engine(args, train_remain_loader, val_remain_loader, train_loader, val
 
         print('\noriginal model acc:\n', test(ori_model, val_loader, idx_to_class, num_classes, device))
 
+        # Free ori_model's GPU memory before building a second full model for
+        # the retrain phase - without this, both models (plus SGD momentum
+        # buffers, plus activations) are resident on GPU simultaneously,
+        # which can OOM for large architectures/batch sizes (e.g.
+        # vgg16/vgg16_bn/resnet50/vit at batch_size=256+) even though each
+        # model individually fits fine. Matches the --retrain_only and
+        # "load both checkpoints" branches below, which already do this.
+        ori_model.to('cpu')
+        torch.cuda.empty_cache()
+
         retrain_model, _, _ = train_save_model(train_remain_loader, val_remain_loader, args.model_name, args.optim_name,
                                         args.lr, args.epoch, device, model_name + "_retrain_model_" + 'class_' + str(args.forget_class) + '_', dataset=dataset, data_name=args.data_name, forget_class=args.forget_class,
                                         momentum=args.momentum, weight_decay=args.weight_decay,
