@@ -675,11 +675,29 @@ def main():
     if overall_rows:
         import csv as csv_mod
         overall_path = f"{args.name}_all_baselines_best.csv"
+
+        # Merge with any pre-existing overall CSV at this path, keyed by
+        # method, instead of overwriting it outright - running this script
+        # again with a --method subset (e.g. "everything except finetune,
+        # which already finished") must not silently drop finetune's row,
+        # since the follow-up configs' --warm_start_csv reads this exact
+        # file and would otherwise just start cold for the missing method
+        # with no error or warning.
+        merged = {}
+        if os.path.exists(overall_path):
+            with open(overall_path, newline='') as f:
+                for row in csv_mod.DictReader(f):
+                    merged[row['method']] = row
+        for row in overall_rows:
+            merged[row['method']] = row  # this run's result wins on overlap
+
+        fieldnames = list(overall_rows[0].keys())
         with open(overall_path, 'w', newline='') as f:
-            writer = csv_mod.DictWriter(f, fieldnames=list(overall_rows[0].keys()))
+            writer = csv_mod.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(overall_rows)
-        print(f"\n[hpo_search] Wrote {overall_path} ({len(overall_rows)} baselines)")
+            writer.writerows(merged.values())
+        print(f"\n[hpo_search] Wrote {overall_path} ({len(merged)} baselines total: "
+              f"{len(overall_rows)} from this run, {len(merged) - len(overall_rows)} carried over)")
 
 
 if __name__ == '__main__':
