@@ -104,6 +104,7 @@ import json
 import os
 import sys
 import time
+import traceback
 
 import numpy as np
 import optuna
@@ -456,6 +457,30 @@ def _load_warm_start_params(warm_start_csv, method):
     return None
 
 
+def write_overall_csv(name, row):
+    """Merges one method's summary row into {name}_all_baselines_best.csv
+    immediately (keyed by method, never overwriting other methods' rows) -
+    called after EACH method completes, not once at the end of the whole
+    --method list. A later method crashing must not discard earlier
+    methods' already-complete results, which a single write-after-the-
+    whole-loop would do (an uncaught exception aborts before any file gets
+    written at all). Also reused by rebuild_overall_csv.py to recover
+    already-completed methods' results after exactly that kind of crash."""
+    import csv as csv_mod
+    overall_path = f"{name}_all_baselines_best.csv"
+    merged = {}
+    if os.path.exists(overall_path):
+        with open(overall_path, newline='') as f:
+            for r in csv_mod.DictReader(f):
+                merged[r['method']] = r
+    merged[row['method']] = row
+    with open(overall_path, 'w', newline='') as f:
+        writer = csv_mod.DictWriter(f, fieldnames=list(row.keys()))
+        writer.writeheader()
+        writer.writerows(merged.values())
+    print(f"[hpo_search] Updated {overall_path} ({len(merged)} baselines total)")
+
+
 def run_study(method, args, ctx):
     print(f"\n{'='*70}\n  Searching: {method}  ({args.n_trials} trials)\n{'='*70}")
 
@@ -664,40 +689,46 @@ def main():
 
     ctx = setup(args, device)
 
-    overall_rows = []
+    completed, skipped = [], []
     for method in args.method_list:
         if not is_applicable(method, args, ctx['trainset']):
+            skipped.append((method, 'inapplicable to this data_name/model_name'))
             continue
-        summary = run_study(method, args, ctx)
+        try:
+            summary = run_study(method, args, ctx)
+        except Exception:
+            # One method's search crashing (OOM, a bad hyperparameter
+            # combination the sampler landed on, etc.) must not take every
+            # method after it down too - print the traceback, record it,
+            # and move on. Without this, a crash during e.g. 'delete' would
+            # silently discard results from every method the search already
+            # finished before reaching it.
+            print(f"[hpo_search] {method}: search FAILED, skipping. Traceback:")
+            traceback.print_exc()
+            skipped.append((method, 'exception during search - see traceback above'))
+            continue
         if summary is not None:
-            overall_rows.append(summary)
+            write_overall_csv(args.name, summary)
+            completed.append(method)
+        else:
+            skipped.append((method, 'no trials completed'))
 
-    if overall_rows:
-        import csv as csv_mod
-        overall_path = f"{args.name}_all_baselines_best.csv"
+    expected = len(args.method_list)
+    print(f"\n{'='*70}\n  COMPLETENESS SUMMARY\n{'='*70}")
+    print(f"Completed: {len(completed)}/{expected} requested methods")
+    for method in completed:
+        print(f"  OK      {method}")
+    for method, reason in skipped:
+        print(f"  MISSING {method}: {reason}")
 
-        # Merge with any pre-existing overall CSV at this path, keyed by
-        # method, instead of overwriting it outright - running this script
-        # again with a --method subset (e.g. "everything except finetune,
-        # which already finished") must not silently drop finetune's row,
-        # since the follow-up configs' --warm_start_csv reads this exact
-        # file and would otherwise just start cold for the missing method
-        # with no error or warning.
-        merged = {}
-        if os.path.exists(overall_path):
-            with open(overall_path, newline='') as f:
-                for row in csv_mod.DictReader(f):
-                    merged[row['method']] = row
-        for row in overall_rows:
-            merged[row['method']] = row  # this run's result wins on overlap
-
-        fieldnames = list(overall_rows[0].keys())
-        with open(overall_path, 'w', newline='') as f:
-            writer = csv_mod.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(merged.values())
-        print(f"\n[hpo_search] Wrote {overall_path} ({len(merged)} baselines total: "
-              f"{len(overall_rows)} from this run, {len(merged) - len(overall_rows)} carried over)")
+    summary_path = f"{args.name}_completeness.json"
+    with open(summary_path, 'w') as f:
+        json.dump({
+            'expected_methods': expected,
+            'completed': completed,
+            'skipped': [{'method': m, 'reason': r} for m, r in skipped],
+        }, f, indent=2)
+    print(f"[hpo_search] Wrote completeness summary to {summary_path}")
 
 
 if __name__ == '__main__':
