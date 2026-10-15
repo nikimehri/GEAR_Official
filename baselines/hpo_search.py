@@ -207,10 +207,29 @@ def setup(args, device):
 
 def load_fresh_original_model(args, device, num_classes):
     """Every trial must start from the SAME pristine original checkpoint -
-    never a model another trial already mutated."""
-    model = load_model(args.model_name, num_classes=num_classes, data_name=args.data_name).to(device)
-    model = load_model_state(model, args.original_model)
-    return model
+    never a model another trial already mutated.
+
+    Loads the checkpoint directly as a full pickled model object - every
+    checkpoint this repo actually produces is one (see trainer.py's
+    train_save_model: torch.save(model, ...), not torch.save(state_dict,
+    ...)) - rather than via load_model()+load_model_state(). That older
+    path first constructs a FRESH model through load_model(), and for
+    resnet/resnet18/resnet50 that constructor (models.CustomResNet) always
+    requests torchvision's ImageNet-pretrained weights before the
+    checkpoint's own state dict ever gets applied on top of it - a
+    needless download (and a hard failure without internet access or a
+    local torch hub cache) for weights about to be completely overwritten
+    anyway. mirrors trainer.load_checkpoint()'s approach, which is why
+    gear_hpo_search.py never hits this. Falls back to the old
+    load_model()+load_model_state() path only if the checkpoint turns out
+    to be a bare state dict rather than a full model object."""
+    checkpoint = torch.load(args.original_model, map_location=device, weights_only=False)
+    if isinstance(checkpoint, dict):
+        model = load_model(args.model_name, num_classes=num_classes, data_name=args.data_name).to(device)
+        return load_model_state(model, args.original_model, map_location=device)
+    if isinstance(checkpoint, torch.nn.DataParallel):
+        checkpoint = checkpoint.module
+    return checkpoint.to(device)
 
 
 # =============================================================================
