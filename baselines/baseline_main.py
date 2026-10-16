@@ -130,10 +130,29 @@ def all_readouts(model, test_loader, final_forget_loader, final_remain_loader, s
 
     # Retain Adjacent/Remote Accuracy (class-taxonomy-based - see
     # class_hierarchy.py; 'N/A' for any data_name without a known hierarchy).
+    #
+    # Uses test_loader.dataset, NOT the module-level `dataset` global, as the
+    # pool these indices are drawn from and fed into the model. `dataset` is
+    # built by get_dataset() with a trivial ToTensor-only transform (correct
+    # for its OTHER use - label-only access like counting forget-class
+    # samples - but never resized/normalized for whichever architecture is
+    # actually running). test_loader.dataset carries get_dataset()'s real
+    # model-specific transform (e.g. cifar100/vit's Resize((224,224)) +
+    # ImageNet normalization) - matching gear.py's own Retain Adjacent/
+    # Remote Accuracy call, which already uses its properly-transformed `dv`
+    # rather than a separate raw dataset. Passing the untransformed 32x32
+    # `dataset` straight into a ViT model crashes
+    # ("Input height (32) doesn't match model (224)") since timm's patch
+    # embedding hard-asserts its expected resolution; AllCNN/ResNet merely
+    # ran on technically-unnormalized-but-right-shaped input instead of
+    # erroring, which is why this never surfaced before a ViT config was
+    # tried. Same underlying CIFAR100 test-set samples/order either way
+    # (get_dataset() builds both from train=False), so the index lists
+    # computed here remain valid against this substituted dataset.
     adjacent_indices, remote_indices = class_hierarchy.get_adjacent_remote_split(
-        data_name, forget_class, dataset)
+        data_name, forget_class, test_loader.dataset)
     retain_adjacent_acc, retain_remote_acc = class_hierarchy.compute_split_accuracy(
-        model, dataset, adjacent_indices, remote_indices, device)
+        model, test_loader.dataset, adjacent_indices, remote_indices, device)
 
     # AIN (Anamnesis Index) - opt-in and requires both the original and
     # retrain checkpoints (retrain is the gold-standard denominator of the
