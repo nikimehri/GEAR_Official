@@ -1,6 +1,5 @@
 from torch import nn
 import torch
-import timm
 from torchvision.models import (resnet18, ResNet18_Weights, resnet50, ResNet50_Weights, vgg16, VGG16_Weights,
                                 vgg16_bn, VGG16_BN_Weights)
 
@@ -287,6 +286,14 @@ class ViT(nn.Module):
 
     def __init__(self, num_classes, timm_model_name='vit_base_patch32_224', img_size=224, patch_size=32):
         super(ViT, self).__init__()
+        # Imported here, not at module level, so machines that never touch
+        # --model_name vit (every other baseline/config in this repo) don't
+        # pay timm's import cost - timm pulls in huggingface_hub, which is
+        # slow/hang-prone to import on machines with no internet access or
+        # a slow networked filesystem (same reasoning baseline_utils.
+        # load_model()'s distilbert branch already lazily imports
+        # text_models/transformers for).
+        import timm
         self.vit = timm.create_model(timm_model_name, pretrained=True, img_size=img_size, patch_size=patch_size)
         self.vit.head = nn.Linear(self.vit.head.in_features, num_classes)
 
