@@ -101,7 +101,7 @@ def setup(args, device):
         train_forget_loader=train_forget_loader, train_remain_loader=train_remain_loader,
         val_loader=val_loader, test_loader_real=test_loader_real,
         test_forget_loader=test_forget_loader, test_remain_loader=test_remain_loader,
-        train_dict=train_dict, val_dict=val_dict,
+        train_dict=train_dict, val_dict=val_dict, test_dict=test_dict,
     )
 
 
