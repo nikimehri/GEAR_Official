@@ -116,6 +116,16 @@ def make_objective(args, ctx, device):
             forget_forget_weight=trial.suggest_float('forget_forget_weight', 0.1, 10.0, log=True),
             feature_align_weight=trial.suggest_float('feature_align_weight', 0.0, 2.0),
             poison_epoch=trial.suggest_int('poison_epoch', 2, 10),
+            # Targets Retain Adjacent Accuracy directly (see
+            # migration_notes/experiments_plan.md section 17): makes the
+            # entanglement weighting symmetric, protecting retain samples
+            # closest to the forget class - the ones most likely to absorb
+            # collateral damage from forget_forget_weight/retain_forget_weight.
+            # Previously fixed at its gear.gear() default (False) here,
+            # meaning this search never actually explored it.
+            retain_entanglement_protection=trial.suggest_categorical(
+                'retain_entanglement_protection', [True, False]),
+            retain_protection_strength=trial.suggest_float('retain_protection_strength', 0.5, 5.0, log=True),
         )
 
         ori_model = load_checkpoint(args.original_model, 'original_model', device=device)
@@ -135,6 +145,8 @@ def make_objective(args, ctx, device):
                 retain_forget_weight=hp['retain_forget_weight'],
                 forget_forget_weight=hp['forget_forget_weight'],
                 forget_forget_mode=args.forget_forget_mode,
+                retain_entanglement_protection=hp['retain_entanglement_protection'],
+                retain_protection_strength=hp['retain_protection_strength'],
                 gamma_rep=hp['gamma_rep'],
                 target_layer=args.target_layer,
                 results_csv=results_csv,
@@ -177,19 +189,39 @@ def make_objective(args, ctx, device):
     return objective
 
 
-def select_best_trial(study, forget_acc_threshold):
+def select_best_trial(study, forget_acc_threshold, retain_floor_frac=0.5):
     """Identical selection rule to baselines/hpo_search.py's, for
     consistency: among trials with val_forget_acc <= forget_acc_threshold,
     pick the highest val_retain_acc; adaptive fallback to the lowest
-    observed val_forget_acc if none clear the threshold."""
+    observed val_forget_acc if none clear the threshold.
+
+    Same guard as baselines/hpo_search.py's select_best_trial against
+    crowning a collapsed trial winner: a model whose retain accuracy has
+    crashed toward chance level trivially gets near-zero forget accuracy
+    too (failing every class, not selectively forgetting one) - large
+    forget_forget_weight/retain_forget_weight values can do this to GEAR
+    just as badly as the equivalent baselines, so this needs the same
+    self-relative retain floor before the stated rule is applied."""
     completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
     if not completed:
         return None, forget_acc_threshold
-    candidates = [t for t in completed if t.user_attrs['val_forget_acc'] <= forget_acc_threshold]
+
+    best_retain_seen = max(t.user_attrs['val_retain_acc'] for t in completed)
+    retain_floor = retain_floor_frac * best_retain_seen
+    healthy = [t for t in completed if t.user_attrs['val_retain_acc'] >= retain_floor]
+    if not healthy:
+        print(f"[gear_hpo_search] WARNING: every completed trial has val_retain_acc below "
+              f"{retain_floor_frac} x the best observed ({best_retain_seen:.4f}) - this run "
+              f"looks collapsed in every trial, not just the one that would otherwise be "
+              f"selected. Falling back to the full (unfiltered) trial pool, but the result "
+              f"should not be trusted without investigating why.")
+        healthy = completed
+
+    candidates = [t for t in healthy if t.user_attrs['val_forget_acc'] <= forget_acc_threshold]
     effective_threshold = forget_acc_threshold
     if not candidates:
-        effective_threshold = min(t.user_attrs['val_forget_acc'] for t in completed)
-        candidates = [t for t in completed if t.user_attrs['val_forget_acc'] == effective_threshold]
+        effective_threshold = min(t.user_attrs['val_forget_acc'] for t in healthy)
+        candidates = [t for t in healthy if t.user_attrs['val_forget_acc'] == effective_threshold]
     best = max(candidates, key=lambda t: t.user_attrs['val_retain_acc'])
     return best, effective_threshold
 
@@ -213,6 +245,10 @@ def main():
                    help="x in the selection rule: among trials with val_forget_acc <= x, pick the "
                         "highest val_retain_acc. Falls back to the lowest observed val_forget_acc "
                         "if no trial clears this threshold.")
+    p.add_argument('--retain_floor_frac', type=float, default=0.5,
+                   help="Trials with val_retain_acc below this fraction of the study's own best "
+                        "observed val_retain_acc are excluded before the selection rule runs - "
+                        "guards against picking a collapsed trial. See select_best_trial()'s docstring.")
     p.add_argument('--forget_forget_mode', type=str, default='disperse', choices=['attract', 'disperse'],
                    help="FIXED for the whole search (not itself swept) - default 'disperse'.")
     p.add_argument('--target_layer', type=str, default='layer4',
@@ -241,7 +277,7 @@ def main():
     study = optuna.create_study(direction='maximize', sampler=sampler, study_name=args.name)
     study.optimize(make_objective(args, ctx, device), n_trials=args.n_trials)
 
-    best_trial, effective_threshold = select_best_trial(study, args.forget_acc_threshold)
+    best_trial, effective_threshold = select_best_trial(study, args.forget_acc_threshold, args.retain_floor_frac)
     if best_trial is None:
         print("[gear_hpo_search] No trials completed.")
         return
