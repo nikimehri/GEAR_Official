@@ -261,6 +261,106 @@ def compute_retain_entanglement_scores(retain_feats_normed, forget_feats_normed,
 
 
 # =============================================================================
+# SOFT NEAREST NEIGHBOR (SNNL)-STYLE ENTANGLEMENT SCORING
+# (Frosst & Hinton, "Analyzing and Improving Representations with the Soft
+# Nearest Neighbor Loss", ICML 2019 - https://proceedings.mlr.press/v97/frosst19a.pdf)
+#
+# Drop-in alternatives to compute_entanglement_scores/
+# compute_retain_entanglement_scores above - same per-sample-weight role
+# (consumed as a no-grad multiplier by retain_forget_loss/
+# retain_alignment_loss, never a loss term in its own right), different,
+# richer scoring function: a pairwise, temperature-controlled, Gaussian-
+# kernel neighbor probability over the CURRENT step's combined forget+retain
+# batch, instead of a single cosine similarity to a cached, periodically-
+# refreshed retain-class centroid. No centroid cache needed at all - this is
+# the whole point, but it also means the score's quality depends on how many
+# forget/retain samples actually land in a given batch (see gear()'s
+# entanglement_metric docstring).
+# =============================================================================
+
+def soft_nearest_neighbor_entanglement_scores(forget_feats_normed, retain_feats_normed, temperature=1.0):
+    """SNNL-style analogue of compute_entanglement_scores: for each forget
+    sample i, the Gaussian-kernel-weighted probability that a soft nearest
+    neighbor - drawn from the current batch's combined forget+retain pool -
+    is a retain sample, at temperature T:
+
+        e_i = sum_{j in retain} K(i,j) / sum_{k != i, k in forget+retain} K(i,k)
+        K(i,j) = exp(-||z_i - z_j||^2 / T)
+
+    High e_i means i's neighborhood at this temperature is dominated by
+    retain points (heavily entangled); low e_i means its neighbors are
+    mostly other forget points (well separated). Squared distances between
+    L2-normalized vectors lie in [0, 4], so temperature is on that scale.
+
+    Args:
+        forget_feats_normed: [B_f, D] L2-normalized forget features
+        retain_feats_normed: [B_r, D] L2-normalized retain features - the
+            CURRENT step's retain batch, not the whole retain set
+        temperature: softens (high T) or sharpens (low T) the neighbor kernel
+    Returns:
+        e: [B_f] entanglement score per forget sample, in [0, 1]
+    """
+    all_feats = torch.cat([forget_feats_normed, retain_feats_normed], dim=0)  # [B_f+B_r, D]
+    is_retain = torch.cat([
+        torch.zeros(forget_feats_normed.size(0), dtype=torch.bool, device=all_feats.device),
+        torch.ones(retain_feats_normed.size(0), dtype=torch.bool, device=all_feats.device),
+    ])
+
+    sq_dists = torch.cdist(forget_feats_normed, all_feats, p=2) ** 2  # [B_f, B_f+B_r]
+    kernel = torch.exp(-sq_dists / temperature)
+
+    # Exclude each forget sample's self-comparison (self-distance is 0, so
+    # self-similarity would otherwise dominate the denominator).
+    self_idx = torch.arange(forget_feats_normed.size(0), device=all_feats.device)
+    kernel[self_idx, self_idx] = 0.0
+
+    retain_mass = (kernel * is_retain.unsqueeze(0)).sum(dim=1)
+    total_mass = kernel.sum(dim=1).clamp(min=1e-12)
+    return retain_mass / total_mass
+
+
+def soft_nearest_neighbor_retain_protection_scores(retain_feats_normed, forget_feats_normed,
+                                                    temperature=1.0, protection_strength=1.0):
+    """SNNL-style analogue of compute_retain_entanglement_scores: for each
+    retain sample j, the Gaussian-kernel-weighted probability that a soft
+    nearest neighbor - drawn from the current batch's combined retain+forget
+    pool - is a forget sample, used the same way as
+    compute_retain_entanglement_scores's score: a per-retain-sample
+    protection multiplier w_j = 1 + protection_strength * r_j, where
+
+        r_j = sum_{k in forget} K(j,k) / sum_{k != j, k in retain+forget} K(j,k)
+
+    See soft_nearest_neighbor_entanglement_scores for the shared kernel
+    definition and its batch-size caveat.
+
+    Args:
+        retain_feats_normed: [B_r, D] L2-normalized retain features
+        forget_feats_normed: [B_f, D] L2-normalized forget features - the
+            CURRENT step's forget batch
+        temperature: same kernel temperature as the forget-side score
+        protection_strength: scales how much extra protection entanglement buys
+    Returns:
+        w: [B_r] per-retain-sample weight, each >= 1.0
+    """
+    all_feats = torch.cat([retain_feats_normed, forget_feats_normed], dim=0)
+    is_forget = torch.cat([
+        torch.zeros(retain_feats_normed.size(0), dtype=torch.bool, device=all_feats.device),
+        torch.ones(forget_feats_normed.size(0), dtype=torch.bool, device=all_feats.device),
+    ])
+
+    sq_dists = torch.cdist(retain_feats_normed, all_feats, p=2) ** 2
+    kernel = torch.exp(-sq_dists / temperature)
+
+    self_idx = torch.arange(retain_feats_normed.size(0), device=all_feats.device)
+    kernel[self_idx, self_idx] = 0.0
+
+    forget_mass = (kernel * is_forget.unsqueeze(0)).sum(dim=1)
+    total_mass = kernel.sum(dim=1).clamp(min=1e-12)
+    r = forget_mass / total_mass  # already >= 0, unlike the cosine version - no clamp needed
+    return 1.0 + protection_strength * r
+
+
+# =============================================================================
 # EVALUATION METRICS
 # =============================================================================
 
@@ -512,6 +612,8 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
          # ES (entanglement-score) weighting of rf_loss
          # ----------------------------------------------------------
          use_entanglement_weighting=False,
+         entanglement_metric='centroid',
+         snnl_temperature=1.0,
          centroid_refresh_interval=None,
          centroid_mode='dynamic',
          num_classes=None,
@@ -568,13 +670,33 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
     use_entanglement_weighting, though they're designed to be used together.
 
     centroid_mode ('dynamic' or 'cached', only meaningful when
-    use_entanglement_weighting is set) controls how retain centroids behave
-    over the run: 'dynamic' (default) recomputes them periodically, every
-    centroid_refresh_interval steps, as the model's representation space
-    shifts during unlearning - today's existing behavior. 'cached' computes
-    them once, on the first step that needs them, and freezes them for the
-    rest of the run - i.e. entanglement scores are always measured against
-    the *original* model's retain geometry, not a moving target.
+    use_entanglement_weighting is set AND entanglement_metric == 'centroid')
+    controls how retain centroids behave over the run: 'dynamic' (default)
+    recomputes them periodically, every centroid_refresh_interval steps, as
+    the model's representation space shifts during unlearning - today's
+    existing behavior. 'cached' computes them once, on the first step that
+    needs them, and freezes them for the rest of the run - i.e. entanglement
+    scores are always measured against the *original* model's retain
+    geometry, not a moving target.
+
+    entanglement_metric ('centroid' or 'snnl', only meaningful when
+    use_entanglement_weighting is set) picks which function computes the
+    per-sample entanglement weight consumed by retain_forget_loss (and, when
+    retain_entanglement_protection is set, retain_alignment_loss).
+    'centroid' (default) is the original compute_entanglement_scores/
+    compute_retain_entanglement_scores: a cosine similarity to a cached,
+    periodically-refreshed retain-class centroid. 'snnl' is
+    soft_nearest_neighbor_entanglement_scores/
+    soft_nearest_neighbor_retain_protection_scores (Frosst & Hinton, ICML
+    2019): a pairwise, Gaussian-kernel neighbor probability computed fresh
+    from the CURRENT step's forget+retain batch alone - no centroid cache,
+    so centroid_mode/centroid_refresh_interval are ignored under 'snnl'.
+    This also means its signal quality depends on how many forget/retain
+    samples land in a given batch - noisy at very small batch sizes, since
+    a batch with few forget samples gives few same-class neighbors to
+    estimate the probability from. snnl_temperature controls the kernel's
+    softness (squared distances between L2-normalized features lie in
+    [0, 4], so temperature is on that scale).
     """
 
     start = time.time()
@@ -623,10 +745,14 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
     centroid_cache = None             # plain tensor buffer, refreshed per centroid_mode below
 
     if use_entanglement_weighting:
-        print(f'use_entanglement_weighting: True | '
-              f'centroid_mode: {centroid_mode} | '
-              f'centroid_refresh_interval: {centroid_refresh_interval} | '
-              f'primary_layer: {_primary_layer}')
+        if entanglement_metric == 'snnl':
+            print(f'use_entanglement_weighting: True | entanglement_metric: snnl | '
+                  f'snnl_temperature: {snnl_temperature} | primary_layer: {_primary_layer}')
+        else:
+            print(f'use_entanglement_weighting: True | entanglement_metric: centroid | '
+                  f'centroid_mode: {centroid_mode} | '
+                  f'centroid_refresh_interval: {centroid_refresh_interval} | '
+                  f'primary_layer: {_primary_layer}')
     # -------------------------------------------------------------------------
 
     # Per-component loss log for plotting
@@ -684,7 +810,7 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
         _ff_for_ent = None        # no-grad forget primary-layer features
         mean_ent_score = 0.0
 
-        if use_entanglement_weighting:
+        if use_entanglement_weighting and entanglement_metric == 'centroid':
             # Lazy num_classes inference (once per run)
             if _num_classes is None:
                 if remain_logits is not None:
@@ -725,6 +851,23 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
                         )  # [B_f, D]
                         e_scores = compute_entanglement_scores(_ff_for_ent, centroid_cache)
                         mean_ent_score = e_scores.mean().item()
+        elif use_entanglement_weighting and entanglement_metric == 'snnl':
+            if target_layer == 'all' and feature_contrastive:
+                # Multi-layer mode with contrastive: derived from
+                # forget_feats_dict/retain_feats_dict[_primary_layer] there -
+                # no separate pass needed (mirrors the 'centroid' branch).
+                pass
+            else:
+                with torch.no_grad():
+                    _ff_for_ent = prepare_features(
+                        get_intermediate_features(unlearn_model, x, _primary_layer)
+                    )  # [B_f, D]
+                    _rf_for_ent = prepare_features(
+                        get_intermediate_features(unlearn_model, x_rem, _primary_layer)
+                    )  # [B_r, D] - the current step's retain batch, not the whole retain set
+                    e_scores = soft_nearest_neighbor_entanglement_scores(
+                        _ff_for_ent, _rf_for_ent, temperature=snnl_temperature)
+                    mean_ent_score = e_scores.mean().item()
 
         # --- Contrastive / representation loss (gamma_rep) -----------------
         contrastive_loss_val = torch.tensor(0.0, device=device)
@@ -741,11 +884,17 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
                 # extra forward pass that _get_primary_layer used to require.
                 # Only runs when entanglement weighting is enabled; single-layer path
                 # is never reached by this branch.
-                if use_entanglement_weighting and centroid_cache is not None:
+                if use_entanglement_weighting:
                     with torch.no_grad():
                         _ff_for_ent = prepare_features(forget_feats_dict[_primary_layer].detach())
-                        e_scores = compute_entanglement_scores(_ff_for_ent, centroid_cache)
-                        mean_ent_score = e_scores.mean().item()
+                        if entanglement_metric == 'centroid' and centroid_cache is not None:
+                            e_scores = compute_entanglement_scores(_ff_for_ent, centroid_cache)
+                            mean_ent_score = e_scores.mean().item()
+                        elif entanglement_metric == 'snnl':
+                            _rf_for_ent = prepare_features(retain_feats_dict[_primary_layer].detach())
+                            e_scores = soft_nearest_neighbor_entanglement_scores(
+                                _ff_for_ent, _rf_for_ent, temperature=snnl_temperature)
+                            mean_ent_score = e_scores.mean().item()
 
                 align_loss = torch.tensor(0.0, device=device)
                 rf_loss = torch.tensor(0.0, device=device)
@@ -761,10 +910,17 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
                     _r_weights = None
                     if retain_entanglement_protection:
                         with torch.no_grad():
-                            _r_weights = compute_retain_entanglement_scores(
-                                r_f.detach(), f_f.detach(),
-                                protection_strength=retain_protection_strength,
-                            )
+                            if entanglement_metric == 'snnl':
+                                _r_weights = soft_nearest_neighbor_retain_protection_scores(
+                                    r_f.detach(), f_f.detach(),
+                                    temperature=snnl_temperature,
+                                    protection_strength=retain_protection_strength,
+                                )
+                            else:
+                                _r_weights = compute_retain_entanglement_scores(
+                                    r_f.detach(), f_f.detach(),
+                                    protection_strength=retain_protection_strength,
+                                )
                     align_loss = align_loss + retain_alignment_loss(
                         r_f, r_ref_f, entanglement_weights=_r_weights)
                     rf_loss = rf_loss + retain_forget_loss(r_f, f_f, entanglement_scores=e_scores)
@@ -788,10 +944,17 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
                 _r_weights = None
                 if retain_entanglement_protection:
                     with torch.no_grad():
-                        _r_weights = compute_retain_entanglement_scores(
-                            retain_feats.detach(), forget_feats.detach(),
-                            protection_strength=retain_protection_strength,
-                        )
+                        if entanglement_metric == 'snnl':
+                            _r_weights = soft_nearest_neighbor_retain_protection_scores(
+                                retain_feats.detach(), forget_feats.detach(),
+                                temperature=snnl_temperature,
+                                protection_strength=retain_protection_strength,
+                            )
+                        else:
+                            _r_weights = compute_retain_entanglement_scores(
+                                retain_feats.detach(), forget_feats.detach(),
+                                protection_strength=retain_protection_strength,
+                            )
 
                 align_loss = retain_alignment_loss(
                     retain_feats, retain_ref_feats, entanglement_weights=_r_weights)
@@ -979,6 +1142,8 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
             "poison_epoch": poison_epoch,
             "feature_contrastive": feature_contrastive,
             "use_entanglement_weighting": use_entanglement_weighting,
+            "entanglement_metric": entanglement_metric,
+            "snnl_temperature": snnl_temperature,
             "centroid_mode": centroid_mode,
             "centroid_refresh_interval": centroid_refresh_interval,
             # Entanglement diagnostics (mean over all training steps)

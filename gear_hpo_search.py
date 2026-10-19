@@ -111,24 +111,27 @@ def make_objective(args, ctx, device):
     def objective(trial):
         hp = dict(
             remain_reg_param=trial.suggest_float('remain_reg_param', 0.1, 5.0),
-            gamma_rep=trial.suggest_float('gamma_rep', 0.1, 5.0),
+            # A second 20-trial run (poison_epoch widened to 5-30) dropped
+            # the best forget_acc from 0.35 to 0.11, with 9/10 top trials
+            # using poison_epoch 23-30 (still pinned at the new ceiling,
+            # same signature as last time) AND the single best trial's
+            # gamma_rep=4.65 sitting within 7% of this 5.0 ceiling - the
+            # same "best trial pressed against the search space edge" signal
+            # that justified widening poison_epoch. Raised to 10.0.
+            gamma_rep=trial.suggest_float('gamma_rep', 0.1, 10.0),
             retain_forget_weight=trial.suggest_float('retain_forget_weight', 0.1, 10.0, log=True),
             forget_forget_weight=trial.suggest_float('forget_forget_weight', 0.1, 10.0, log=True),
             feature_align_weight=trial.suggest_float('feature_align_weight', 0.0, 2.0),
-            # A first 15-trial run on cifar10/allcnn (poison_epoch capped at
-            # 10) showed a clean trend: the lowest-forget_acc trials all
-            # used poison_epoch 7-10, the worst all used 2, with no
-            # comparable pattern in retain_forget_weight/forget_forget_weight/
-            # gamma_rep - none of those 15 trials got anywhere near forget_acc
-            # ~0 (best was 0.35 vs the retrain gold standard's 0.0), and the
-            # trend hadn't plateaued at the old ceiling. GEAR has no direct
-            # forget-set loss term (forgetting is a side effect of
-            # representation-space geometry change, not a forget-CE term),
-            # so it plausibly just needs more training than 10 epochs allowed
-            # - raised the ceiling to 30. Per-epoch cost on AllCNN/CIFAR10 is
-            # cheap and scales linearly (~6.2s/epoch observed), so even 30
-            # epochs is only ~3min/trial, not a real budget concern.
-            poison_epoch=trial.suggest_int('poison_epoch', 5, 30),
+            # v1 (poison_epoch capped at 10): best trials all used 7-10
+            # epochs, worst all used 2 - raised the ceiling to 30.
+            # v2 (poison_epoch 5-30): best trials now cluster at 23-30 -
+            # still pinned at the new ceiling, nothing below 13 was
+            # competitive anymore. Raised the ceiling again to 50 and the
+            # floor to 10 (no point re-exploring the now-confirmed-bad
+            # short-epoch region). Per-epoch cost on AllCNN/CIFAR10 is cheap
+            # and scales linearly (~6.2s/epoch observed), so even 50 epochs
+            # is only ~5min/trial.
+            poison_epoch=trial.suggest_int('poison_epoch', 10, 50),
             # Targets Retain Adjacent Accuracy directly (see
             # migration_notes/experiments_plan.md section 17): makes the
             # entanglement weighting symmetric, protecting retain samples
@@ -164,6 +167,8 @@ def make_objective(args, ctx, device):
                 target_layer=args.target_layer,
                 results_csv=results_csv,
                 use_entanglement_weighting=True,
+                entanglement_metric=args.entanglement_metric,
+                snnl_temperature=args.snnl_temperature,
                 num_classes=ctx['num_classes'],
                 data_name=args.data_name,
                 poison_epoch=hp['poison_epoch'],
@@ -267,6 +272,18 @@ def main():
     p.add_argument('--target_layer', type=str, default='layer4',
                    help="FIXED for the whole search. 'layer4' for resnet/resnet50/resnet18, '9' for "
                         "AllCNN, a 0-indexed transformer block number for ViT/DistilBERT.")
+    p.add_argument('--entanglement_metric', type=str, default='centroid', choices=['centroid', 'snnl'],
+                   help="FIXED for the whole search (not itself swept, same as --forget_forget_mode) - "
+                        "which function computes the per-sample entanglement weight. 'centroid' "
+                        "(default): cosine similarity to a cached retain-class centroid. 'snnl': "
+                        "pairwise Soft Nearest Neighbor-style score (Frosst & Hinton, ICML 2019) "
+                        "computed fresh from each step's own forget+retain batch, no centroid cache. "
+                        "Run two separate sweeps (one per value) to compare them, same as you would "
+                        "for --forget_forget_mode attract vs disperse.")
+    p.add_argument('--snnl_temperature', type=float, default=1.0,
+                   help="FIXED for the whole search. Kernel temperature for --entanglement_metric "
+                        "snnl - squared distances between L2-normalized features lie in [0, 4], so "
+                        "this is on that scale. Ignored under --entanglement_metric centroid.")
     p.add_argument('--gpu_id', type=int, default=0)
     p.add_argument('--name', type=str, required=True,
                    help="Output prefix. Per-trial reports: {name}_full_report.csv (written by "
