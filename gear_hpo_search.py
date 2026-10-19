@@ -115,7 +115,20 @@ def make_objective(args, ctx, device):
             retain_forget_weight=trial.suggest_float('retain_forget_weight', 0.1, 10.0, log=True),
             forget_forget_weight=trial.suggest_float('forget_forget_weight', 0.1, 10.0, log=True),
             feature_align_weight=trial.suggest_float('feature_align_weight', 0.0, 2.0),
-            poison_epoch=trial.suggest_int('poison_epoch', 2, 10),
+            # A first 15-trial run on cifar10/allcnn (poison_epoch capped at
+            # 10) showed a clean trend: the lowest-forget_acc trials all
+            # used poison_epoch 7-10, the worst all used 2, with no
+            # comparable pattern in retain_forget_weight/forget_forget_weight/
+            # gamma_rep - none of those 15 trials got anywhere near forget_acc
+            # ~0 (best was 0.35 vs the retrain gold standard's 0.0), and the
+            # trend hadn't plateaued at the old ceiling. GEAR has no direct
+            # forget-set loss term (forgetting is a side effect of
+            # representation-space geometry change, not a forget-CE term),
+            # so it plausibly just needs more training than 10 epochs allowed
+            # - raised the ceiling to 30. Per-epoch cost on AllCNN/CIFAR10 is
+            # cheap and scales linearly (~6.2s/epoch observed), so even 30
+            # epochs is only ~3min/trial, not a real budget concern.
+            poison_epoch=trial.suggest_int('poison_epoch', 5, 30),
             # Targets Retain Adjacent Accuracy directly (see
             # migration_notes/experiments_plan.md section 17): makes the
             # entanglement weighting symmetric, protecting retain samples
