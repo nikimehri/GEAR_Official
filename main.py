@@ -159,6 +159,8 @@ def main(args):
             target_layer=args.target_layer,
             results_csv=results_csv,
             use_entanglement_weighting=args.use_entanglement_weighting,
+            entanglement_metric=args.entanglement_metric,
+            snnl_temperature=args.snnl_temperature,
             centroid_refresh_interval=args.centroid_refresh_interval,
             centroid_mode=args.centroid_mode,
             num_classes=num_classes,

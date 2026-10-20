@@ -275,7 +275,15 @@ def _space_delete(trial, ctx):
 
 
 def _space_ssd(trial, ctx):
-    return dict(dampening_constant=trial.suggest_float('dampening_constant', 0.1, 10.0, log=True),
+    # dampening_constant's floor was 0.1 - every CIFAR10/ResNet18 collapse
+    # trial observed so far (val_retain_acc < 0.25) had dampening_constant
+    # < 1.3 (mostly < 0.5), while every trial with dampening_constant >=
+    # ~0.73 stayed healthy (val_retain_acc > 0.7) regardless of
+    # selection_weighting. Raising the floor to 1.0 removes the collapse
+    # region from the search space entirely, at zero extra GPU cost per
+    # trial (SSD's cost is two Fisher-info passes, independent of this
+    # value).
+    return dict(dampening_constant=trial.suggest_float('dampening_constant', 1.0, 10.0, log=True),
                 selection_weighting=trial.suggest_float('selection_weighting', 1.0, 50.0, log=True))
 
 
@@ -443,18 +451,45 @@ def make_objective(method, args, ctx):
     return objective
 
 
-def select_best_trial(study, forget_acc_threshold):
+def select_best_trial(study, forget_acc_threshold, retain_floor_frac=0.5):
     """Applies the EXACT selection rule the user specified, as a post-hoc
     filter over the real recorded validation metrics - independent of
-    whatever the penalized objective internally optimized toward."""
+    whatever the penalized objective internally optimized toward.
+
+    Guards against crowning a collapsed trial as the winner: a model whose
+    retain accuracy has crashed toward chance level trivially achieves
+    near-zero forget accuracy too (it's failing on every class, not
+    selectively forgetting one), which the original fallback branch below
+    (lowest observed forget_acc wins when no trial clears the threshold)
+    could otherwise reward. Before applying the stated rule, trials with
+    val_retain_acc below retain_floor_frac * (this study's own best observed
+    val_retain_acc) are excluded from consideration - a self-relative floor,
+    not a hardcoded accuracy number, so it adapts to whatever the dataset's
+    achievable retain accuracy actually is. Only falls through to the full,
+    unfiltered trial pool if EVERY completed trial is below that floor (i.e.
+    the method collapsed in every trial run so far) - printed, not silent,
+    since that means the search itself needs attention, not just the
+    selection rule."""
     completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
     if not completed:
         return None, forget_acc_threshold
-    candidates = [t for t in completed if t.user_attrs['val_forget_acc'] <= forget_acc_threshold]
+
+    best_retain_seen = max(t.user_attrs['val_retain_acc'] for t in completed)
+    retain_floor = retain_floor_frac * best_retain_seen
+    healthy = [t for t in completed if t.user_attrs['val_retain_acc'] >= retain_floor]
+    if not healthy:
+        print(f"[hpo_search] WARNING: every completed trial has val_retain_acc below "
+              f"{retain_floor_frac} x the best observed ({best_retain_seen:.4f}) - "
+              f"this method looks collapsed in every trial, not just the one that would "
+              f"otherwise be selected. Falling back to the full (unfiltered) trial pool, "
+              f"but the result should not be trusted without investigating why.")
+        healthy = completed
+
+    candidates = [t for t in healthy if t.user_attrs['val_forget_acc'] <= forget_acc_threshold]
     effective_threshold = forget_acc_threshold
     if not candidates:
-        effective_threshold = min(t.user_attrs['val_forget_acc'] for t in completed)
-        candidates = [t for t in completed if t.user_attrs['val_forget_acc'] == effective_threshold]
+        effective_threshold = min(t.user_attrs['val_forget_acc'] for t in healthy)
+        candidates = [t for t in healthy if t.user_attrs['val_forget_acc'] == effective_threshold]
     best = max(candidates, key=lambda t: t.user_attrs['val_retain_acc'])
     return best, effective_threshold
 
@@ -534,7 +569,7 @@ def run_study(method, args, ctx):
         bm.args.name = _orig_name
         bm.args.tsne = _orig_tsne
 
-    best_trial, effective_threshold = select_best_trial(study, args.forget_acc_threshold)
+    best_trial, effective_threshold = select_best_trial(study, args.forget_acc_threshold, args.retain_floor_frac)
     if best_trial is None:
         print(f"[hpo_search] {method}: no trials completed - skipping summary.")
         return None
@@ -663,6 +698,12 @@ def build_arg_parser():
                    help="x in the selection rule: among trials with val_forget_acc <= x, pick the "
                         "highest val_retain_acc. Falls back to the lowest observed val_forget_acc "
                         "if no trial clears this threshold.")
+    p.add_argument('--retain_floor_frac', type=float, default=0.5,
+                   help="Trials with val_retain_acc below this fraction of the study's own best "
+                        "observed val_retain_acc are excluded before the selection rule runs - "
+                        "guards against picking a collapsed (near-chance-accuracy-on-everything) "
+                        "trial just because it also trivially has near-zero forget_acc. See "
+                        "select_best_trial()'s docstring.")
     p.add_argument('--gpu_id', type=int, default=0)
     p.add_argument('--name', type=str, required=True,
                    help="Output prefix. Recommended: embed data_name/model_name (e.g. "

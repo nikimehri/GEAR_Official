@@ -122,6 +122,18 @@ def _restore_masked_params(model, mask, theta0, optimizer):
                 state['momentum_buffer'].mul_(mask[name])
 
 
+def _set_bn_eval(model):
+    """Puts every BatchNorm layer into eval mode (frozen running stats)
+    while everything else stays in train mode - same rationale as
+    delete.py's _set_bn_eval: random-labeled forget batches plus a tiny
+    default batch_size make BatchNorm's running stats noisy enough to
+    corrupt eval-time behavior for every class, not just the forgotten
+    one."""
+    for module in model.modules():
+        if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+            module.eval()
+
+
 def salun_unlearn(model, train_forget_loader, train_remain_loader, device, num_classes,
                   mask_ratio=0.5, unlearn_epochs=10, lr=0.01, momentum=0.9, weight_decay=5e-4,
                   lr_decay_epochs=(5, 8)):
@@ -142,6 +154,7 @@ def salun_unlearn(model, train_forget_loader, train_remain_loader, device, num_c
 
     retain_gen = inf_generator(train_remain_loader)
     student.train()
+    _set_bn_eval(student)
 
     for _epoch in range(unlearn_epochs):
         for x_f, _y_f in train_forget_loader:

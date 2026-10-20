@@ -419,6 +419,19 @@ class DeviceLoader:
         return len(self.loader)
 
 
+def _set_bn_eval(model):
+    """Puts every BatchNorm layer into eval mode (frozen running stats)
+    while everything else stays in train mode - same rationale as
+    delete.py's _set_bn_eval. Particularly important here since
+    coun_unlearn's own batch_size (passed in via train_remain_loader_raw)
+    is shared with baseline_main.py's/hpo_search.py's global --batch_size
+    (default 8) rather than this file's own CLI default of 64 - BatchNorm
+    running stats are far noisier at that size."""
+    for module in model.modules():
+        if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+            module.eval()
+
+
 def coun_unlearn(model, model_name, data_name, train_remain_loader_raw, device,
                   lambda_scale=1.0, temp=0.1, epochs=1, lr=0.01):
     """Thin wrapper around the coun() core update, for use from
@@ -433,6 +446,7 @@ def coun_unlearn(model, model_name, data_name, train_remain_loader_raw, device,
     model; model itself is not modified."""
     model = copy.deepcopy(model).to(device)
     model.train()
+    _set_bn_eval(model)
 
     optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-4)

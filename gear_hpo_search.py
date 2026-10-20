@@ -263,10 +263,16 @@ def main():
                    help="x in the selection rule: among trials with val_forget_acc <= x, pick the "
                         "highest val_retain_acc. Falls back to the lowest observed val_forget_acc "
                         "if no trial clears this threshold.")
-    p.add_argument('--retain_floor_frac', type=float, default=0.5,
+    p.add_argument('--retain_floor_frac', type=float, default=0.75,
                    help="Trials with val_retain_acc below this fraction of the study's own best "
                         "observed val_retain_acc are excluded before the selection rule runs - "
-                        "guards against picking a collapsed trial. See select_best_trial()'s docstring.")
+                        "guards against picking a collapsed trial. See select_best_trial()'s "
+                        "docstring. Raised from an initial 0.5 after a real cifar10/allcnn/snnl "
+                        "sweep showed a 0.5 floor was too loose: a trial at remain_acc=0.488 "
+                        "(vs. 0.893 best-observed - a 48.8% retain accuracy, clearly collapsed) "
+                        "passed the old 0.5x floor (0.546 ratio) and would have been selected "
+                        "winner purely for having the lowest forget_acc among the (wrongly) "
+                        "'healthy' pool.")
     p.add_argument('--forget_forget_mode', type=str, default='disperse', choices=['attract', 'disperse'],
                    help="FIXED for the whole search (not itself swept) - default 'disperse'.")
     p.add_argument('--target_layer', type=str, default='layer4',

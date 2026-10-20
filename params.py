@@ -154,7 +154,21 @@ def get_parameters():
                         help='GEAR-dynamic (default) periodically recomputes retain centroids as the '
                              'model\'s representation space shifts during unlearning. GEAR-cached '
                              'computes them once and freezes them for the rest of the run. Only '
-                             'meaningful alongside --use_entanglement_weighting.')
+                             'meaningful alongside --use_entanglement_weighting and '
+                             '--entanglement_metric centroid.')
+    parser.add_argument('--entanglement_metric', type=str, default='centroid', choices=['centroid', 'snnl'],
+                        help='Which function computes the per-sample entanglement weight consumed by '
+                             'the retain-forget loss (and, with --retain_entanglement_protection, the '
+                             'retain-alignment loss). "centroid" (default): cosine similarity to a '
+                             'cached, periodically-refreshed retain-class centroid. "snnl": a pairwise '
+                             'Soft Nearest Neighbor-style score (Frosst & Hinton, ICML 2019) computed '
+                             'fresh from the current batch\'s forget+retain samples alone - no centroid '
+                             'cache, so --centroid_mode/--centroid_refresh_interval are ignored. Only '
+                             'meaningful alongside --use_entanglement_weighting and/or '
+                             '--retain_entanglement_protection.')
+    parser.add_argument('--snnl_temperature', type=float, default=1.0,
+                        help='Kernel temperature for --entanglement_metric snnl. Squared distances '
+                             'between L2-normalized features lie in [0, 4], so this is on that scale.')
     parser.add_argument('--cl_warmup_steps', type=int, default=0,
                         help='Steps to linearly ramp gamma_rep from 0 to its target value '
                              'at the start of training. 0 (default) disables the ramp.')

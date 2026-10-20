@@ -50,6 +50,18 @@ from gear import inf_generator
 from baseline_utils import eval as eval_accuracy
 
 
+def _set_bn_eval(model):
+    """Puts every BatchNorm layer into eval mode (frozen running stats)
+    while everything else stays in train mode - same rationale as
+    delete.py's _set_bn_eval: the forget batches driving this loop are
+    single-class and (at the default batch_size=8) tiny, so letting
+    BatchNorm's running_mean/running_var update from them corrupts the
+    stats used at eval time for every class, not just the forgotten one."""
+    for module in model.modules():
+        if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+            module.eval()
+
+
 def _cu_loss(forget_embeddings, forget_labels, retain_embeddings, retain_labels, temperature):
     """Per-forget-sample reversed-InfoNCE loss (paper Eq. 5/6), averaged over
     the forget batch. Forget samples with no different-class retain sample in
@@ -98,6 +110,7 @@ def cu_unlearn(model, train_forget_loader, train_remain_loader, device,
     matching every other baseline's simpler fixed-epoch convention."""
     model = copy.deepcopy(model).to(device)
     model.train()
+    _set_bn_eval(model)
 
     optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
     retain_gen = inf_generator(train_remain_loader)
@@ -134,6 +147,7 @@ def cu_unlearn(model, train_forget_loader, train_remain_loader, device,
             model.eval()
             _, forget_acc = eval_accuracy(model=model, data_loader=eval_forget_loader, device=device)
             model.train()
+            _set_bn_eval(model)
             if forget_acc <= (1.0 / num_classes):
                 break
 
