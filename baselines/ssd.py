@@ -28,8 +28,14 @@ class ParameterPerturber:
 
     def calc_importance(self, dataloader):
         """Mean squared-gradient importance per named parameter, averaged
-        over every sample in dataloader (not just every batch, so a
-        smaller/larger final batch doesn't skew the average)."""
+        over every sample in dataloader. The Fisher quantity needs the sum
+        of per-sample squared gradients, Sigma g_i^2 - a single backward()
+        over a batch of size B>1 can't recover that, since autograd only
+        exposes the aggregated gradient of the batch loss (its mean or sum),
+        not each sample's own gradient; squaring the aggregate gives
+        (Sigma g_i)^2, not Sigma (g_i^2). So this computes one sample at a
+        time regardless of the dataloader's own batch size, matching what
+        the reference implementation's batch_size=1 requirement achieves."""
         importances = {name: torch.zeros_like(p, device=self.device)
                        for name, p in self.model.named_parameters()}
         self.model.eval()
@@ -42,16 +48,16 @@ class ParameterPerturber:
             if y.dim() == 0:
                 y = y.unsqueeze(0)
 
-            self.model.zero_grad()
-            outputs = self.model(x)
-            loss = self.criterion(outputs, y)
-            loss.backward()
+            for i in range(x.size(0)):
+                self.model.zero_grad()
+                outputs = self.model(x[i:i + 1])
+                loss = self.criterion(outputs, y[i:i + 1])
+                loss.backward()
 
-            batch_size = x.size(0)
-            for name, p in self.model.named_parameters():
-                if p.grad is not None:
-                    importances[name] += (p.grad.detach() ** 2) * batch_size
-            total_samples += batch_size
+                for name, p in self.model.named_parameters():
+                    if p.grad is not None:
+                        importances[name] += p.grad.detach() ** 2
+                total_samples += 1
 
         for name in importances:
             importances[name] /= max(total_samples, 1)
