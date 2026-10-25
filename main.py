@@ -1,4 +1,5 @@
 
+import os
 import gear
 from utils import *
 from trainer import *
@@ -11,6 +12,13 @@ from params import get_parameters
 from make_dataloaders import *
 from embeddings import *
 from ensemble import run_exps
+
+# num_workers>0 lets each DataLoader prefetch/augment on background worker
+# processes while the GPU runs the previous batch, instead of stalling the
+# GPU on CPU-side transform/augmentation every batch (every DataLoader here
+# previously defaulted to num_workers=0, i.e. fully synchronous).
+_NUM_WORKERS = int(os.environ.get('GEAR_NUM_WORKERS', min(8, os.cpu_count() or 4)))
+_PIN_MEMORY = torch.cuda.is_available()
 
 
 def main(args):
@@ -82,7 +90,7 @@ def main(args):
     )
 
     train_loader, test_loader = get_dataloader(trainset, testset, args.batch_size)
-    val_loader = DataLoader(valset, batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(valset, batch_size=args.batch_size, shuffle=True, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
 
     # set number of classes
     num_classes, idx_to_class = set_num_classes(args, dataset)

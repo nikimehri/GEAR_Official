@@ -22,6 +22,13 @@ from sklearn.metrics import accuracy_score
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models import *
 
+# num_workers>0 lets each DataLoader prefetch/augment on background worker
+# processes while the GPU runs the previous batch, instead of stalling the
+# GPU on CPU-side transform/augmentation every batch (every DataLoader here
+# previously defaulted to num_workers=0, i.e. fully synchronous).
+_NUM_WORKERS = int(os.environ.get('GEAR_NUM_WORKERS', min(8, os.cpu_count() or 4)))
+_PIN_MEMORY = torch.cuda.is_available()
+
 
 def seed_torch(seed=2022):
     """Seeds numpy/torch RNGs and forces deterministic cuDNN kernels."""
@@ -129,17 +136,17 @@ def get_unlearn_loader(trainset, testset, forget_class, batch_size, num_forget, 
     test_remain_sampler = SubsetRandomSampler(test_remain_index)  # 9000
 
     train_forget_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size,
-                                                      sampler=train_forget_sampler)
+                                                      sampler=train_forget_sampler, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
     train_remain_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size,
-                                                      sampler=train_remain_sampler)
+                                                      sampler=train_remain_sampler, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
 
     repair_class_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size,
-                                                      sampler=repair_class_sampler)
+                                                      sampler=repair_class_sampler, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
 
     test_forget_loader = torch.utils.data.DataLoader(dataset=testset, batch_size=batch_size,
-                                                     sampler=test_forget_sampler)
+                                                     sampler=test_forget_sampler, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
     test_remain_loader = torch.utils.data.DataLoader(dataset=testset, batch_size=batch_size,
-                                                     sampler=test_remain_sampler)
+                                                     sampler=test_remain_sampler, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
 
     return train_forget_loader, train_remain_loader, test_forget_loader, test_remain_loader, repair_class_loader, \
            train_forget_index, train_remain_index, test_forget_index, test_remain_index
@@ -168,9 +175,9 @@ def get_custom_forget_loader_oculoplastics(dataset, metadata_dict, batch_size=8)
     print(f'length of TEST remain indices :{len(remain_indices)}')
 
     forget_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False,
-                                                sampler=torch.utils.data.SubsetRandomSampler(forget_indices), drop_last=True)
+                                                sampler=torch.utils.data.SubsetRandomSampler(forget_indices), drop_last=True, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
     remain_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False,
-                                                sampler=torch.utils.data.SubsetRandomSampler(remain_indices), drop_last=True)
+                                                sampler=torch.utils.data.SubsetRandomSampler(remain_indices), drop_last=True, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
 
     print(f'length of TEST forget loader :{len(forget_loader)}')
     print(f'length of TEST remain loader :{len(remain_loader)}')
@@ -210,9 +217,9 @@ def get_custom_forget_loader(dataset, metadata_dict, attribute_to_forget, batch_
       
 
     forget_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False,
-                                                sampler=torch.utils.data.SubsetRandomSampler(forget_indices), drop_last=True)
+                                                sampler=torch.utils.data.SubsetRandomSampler(forget_indices), drop_last=True, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
     remain_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False,
-                                                sampler=torch.utils.data.SubsetRandomSampler(remain_indices), drop_last=True)
+                                                sampler=torch.utils.data.SubsetRandomSampler(remain_indices), drop_last=True, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
 
     return forget_loader, remain_loader
 
@@ -281,11 +288,11 @@ def get_custom_unlearn_loader_oculoplastics(trainset, testset, train_dict, test_
     test_forget_sampler = SubsetRandomSampler(test_forget_index)
     test_remain_sampler = SubsetRandomSampler(test_remain_index)
 
-    train_forget_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size, sampler=train_forget_sampler)
-    train_remain_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size, sampler=train_remain_sampler)
-    repair_class_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size, sampler=repair_class_sampler)
-    test_forget_loader = torch.utils.data.DataLoader(dataset=testset, batch_size=batch_size, sampler=test_forget_sampler)
-    test_remain_loader = torch.utils.data.DataLoader(dataset=testset, batch_size=batch_size, sampler=test_remain_sampler)
+    train_forget_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size, sampler=train_forget_sampler, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
+    train_remain_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size, sampler=train_remain_sampler, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
+    repair_class_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size, sampler=repair_class_sampler, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
+    test_forget_loader = torch.utils.data.DataLoader(dataset=testset, batch_size=batch_size, sampler=test_forget_sampler, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
+    test_remain_loader = torch.utils.data.DataLoader(dataset=testset, batch_size=batch_size, sampler=test_remain_sampler, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
 
     print(f"Train forget loader size: {len(train_forget_loader)}")
     print(f"Train remain loader size: {len(train_remain_loader)}")
@@ -400,13 +407,13 @@ def get_custom_unlearn_loader(trainset, testset, train_dict, test_dict, unlearn_
     test_forget_sampler = SubsetRandomSampler(test_forget_index)
     test_remain_sampler = SubsetRandomSampler(test_remain_index)
 
-    train_forget_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size, sampler=train_forget_sampler)
-    train_remain_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size, sampler=train_remain_sampler)
+    train_forget_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size, sampler=train_forget_sampler, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
+    train_remain_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size, sampler=train_remain_sampler, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
 
-    repair_class_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size, sampler=repair_class_sampler)
+    repair_class_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size, sampler=repair_class_sampler, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
     
-    test_forget_loader = torch.utils.data.DataLoader(dataset=testset, batch_size=batch_size, sampler=test_forget_sampler)
-    test_remain_loader = torch.utils.data.DataLoader(dataset=testset, batch_size=batch_size, sampler=test_remain_sampler)
+    test_forget_loader = torch.utils.data.DataLoader(dataset=testset, batch_size=batch_size, sampler=test_forget_sampler, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
+    test_remain_loader = torch.utils.data.DataLoader(dataset=testset, batch_size=batch_size, sampler=test_remain_sampler, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
 
     return train_forget_loader, train_remain_loader, test_forget_loader, test_remain_loader, repair_class_loader, \
            train_forget_index, train_remain_index, test_forget_index, test_remain_index
@@ -661,8 +668,8 @@ def get_dataset(data_name, path='./data', model_name=None):
 
 def get_dataloader(trainset, testset, batch_size, device):
         
-    train_loader = DataLoader(dataset=trainset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(dataset=testset, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(dataset=trainset, batch_size=batch_size, shuffle=True, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
+    test_loader = DataLoader(dataset=testset, batch_size=batch_size, shuffle=True, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
     return train_loader, test_loader
 
 
@@ -676,9 +683,9 @@ def get_forget_loader(dt, forget_class):
         else:
             els_idx.append(i)
     forget_loader = torch.utils.data.DataLoader(dt, batch_size=8, shuffle=False,
-                                                sampler=torch.utils.data.SubsetRandomSampler(idx), drop_last=True)
+                                                sampler=torch.utils.data.SubsetRandomSampler(idx), drop_last=True, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
     remain_loader = torch.utils.data.DataLoader(dt, batch_size=8, shuffle=False,
-                                                sampler=torch.utils.data.SubsetRandomSampler(els_idx), drop_last=True)
+                                                sampler=torch.utils.data.SubsetRandomSampler(els_idx), drop_last=True, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
     return forget_loader, remain_loader
 
 

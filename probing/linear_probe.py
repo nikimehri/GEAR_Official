@@ -67,6 +67,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from make_dataloaders import get_dataset  # noqa: E402
 from baselines.baseline_utils import set_num_classes  # noqa: E402
 
+# num_workers>0 lets each DataLoader prefetch on background worker processes
+# while the GPU runs the previous batch, instead of stalling on CPU-side
+# transform work every batch (every DataLoader here previously defaulted to
+# num_workers=0, i.e. fully synchronous).
+_NUM_WORKERS = int(os.environ.get('GEAR_NUM_WORKERS', min(8, os.cpu_count() or 4)))
+_PIN_MEMORY = torch.cuda.is_available()
+
 
 # =============================================================================
 # DETERMINISM
@@ -291,6 +298,10 @@ def train_probe(train_features: torch.Tensor, train_labels: torch.Tensor, num_cl
     criterion = nn.CrossEntropyLoss()
 
     dataset = TensorDataset(train_features, train_labels)
+    # In-memory TensorDataset (already-extracted features) - no CPU-bound
+    # transform work to parallelize, and worker processes would need to
+    # pickle `generator` to stay reproducible, so this one deliberately
+    # keeps num_workers=0 unlike the image-loading loaders below.
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, generator=gen)
 
     probe.train()
@@ -493,9 +504,9 @@ def main(argv=None):
     # test is a disjoint on-disk split (torchvision's train=False file) by
     # construction, never drawn from the same index space as train/val.
 
-    train_loader = DataLoader(splits.train, batch_size=args.extract_batch_size, shuffle=False)
-    val_loader = DataLoader(splits.val, batch_size=args.extract_batch_size, shuffle=False)
-    test_loader = DataLoader(splits.test, batch_size=args.extract_batch_size, shuffle=False)
+    train_loader = DataLoader(splits.train, batch_size=args.extract_batch_size, shuffle=False, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
+    val_loader = DataLoader(splits.val, batch_size=args.extract_batch_size, shuffle=False, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
+    test_loader = DataLoader(splits.test, batch_size=args.extract_batch_size, shuffle=False, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
 
     train_feats, train_labels = get_or_extract_features(
         model, train_loader, device, args.cache_dir, args.checkpoint, 'train')
