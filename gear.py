@@ -8,6 +8,7 @@ import time
 from make_dataloaders import *
 import class_hierarchy
 import ain_metric
+from adv_generator import FGSM
 import embeddings
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
@@ -637,6 +638,13 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
          # reasoning as compute_ain)
          # ----------------------------------------------------------
          generate_tsne=False,
+         bound=0.1,
+         gamma=0,
+         dist='normal',
+         lamda=0,
+         l1_norm=False,
+         scaling=None,
+         boundary_weight=1.0,
          ):
     """Trains an unlearn_model away from ori_model's weights by minimizing a
     retain cross-entropy loss plus a feature-space contrastive/entanglement
@@ -710,6 +718,12 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
     for p in ref_model.parameters():
         p.requires_grad = False
 
+    # Adversarial attack model for the bilevel boundary-shrink term.
+    test_model = copy.deepcopy(ori_model).to(device)
+    adv = FGSM(test_model, bound, True, False, device)
+    num_hits = 0
+    num_sum = 0
+
     start_time = time.time()
 
     forget_data_gen = inf_generator(train_forget_loader)
@@ -761,6 +775,7 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
         "contrastive_loss": [],
         "total_loss": [],
         "entanglement_score": [],   # mean e_i per step (0.0 when ES disabled)
+        "boundary_loss": [],
     }
 
     # -------------------------------------------------------------------------
@@ -780,6 +795,16 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
 
         x_rem = x_rem.to(device)
         y_rem = y_rem.to(device)
+
+        test_model.eval()
+        x_adv = adv.perturb(x, y, target_y=None, model=test_model, device=device,
+                            dist=dist, lamda=lamda, l1_norm=l1_norm,
+                            current_iter=itr + 1, total_iterations=num_iterations,
+                            scaling=scaling, gamma=gamma)
+        adv_logits = test_model(x_adv)
+        pred_label = torch.argmax(adv_logits, dim=1)
+        num_hits += (y != pred_label).float().sum()
+        num_sum += y.shape[0]
 
         unlearn_model.train()
         unlearn_model.zero_grad()
@@ -974,8 +999,15 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
 
         contrastive_contrib = _cl_gamma_rep * contrastive_loss_val
 
-        # --- Total loss (GEAR: beta * retain + gamma_rep * contrastive) -------
-        loss = remain_contrib + contrastive_contrib
+        # --- Boundary-shrink loss (bilevel term) ------------------------------
+        if boundary_weight > 0:
+            boundary_loss = criterion(unlearn_model(x), pred_label)
+        else:
+            boundary_loss = torch.tensor(0.0, device=device)
+        boundary_contrib = boundary_weight * boundary_loss
+
+        # --- Total loss (beta * retain + gamma_rep * contrastive + boundary) --
+        loss = remain_contrib + contrastive_contrib + boundary_contrib
 
         # --- Log components ---------------------------------------------------
         loss_log["retain_loss"].append(
@@ -983,6 +1015,7 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
         )
         loss_log["contrastive_loss"].append(contrastive_loss_val.item())
         loss_log["total_loss"].append(loss.item())
+        loss_log["boundary_loss"].append(boundary_loss.item())
         loss_log["entanglement_score"].append(mean_ent_score)
 
         if itr % 100 == 0:
@@ -990,11 +1023,13 @@ def gear(ori_model, train_forget_loader, dt, dv, test_loader, device,
                   f"retain: {loss_log['retain_loss'][-1]:.4f} | "
                   f"contrastive: {contrastive_loss_val.item():.4f} | "
                   f"entanglement: {mean_ent_score:.4f} | "
+                  f"boundary: {boundary_loss.item():.4f} | "
                   f"total: {loss.item():.4f}")
 
         loss.backward()
         optimizer.step()
 
+    print('attack success ratio:', (num_hits / max(num_sum, 1)).item() if num_sum else 0.0)
     print('GEAR unlearning time:', (time.time() - start_time))
     gear_time = time.time() - start_time
 

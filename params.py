@@ -90,7 +90,7 @@ def get_parameters():
     parser.add_argument('--unlearn_model', type=str, help='path to unlearn model')
     parser.add_argument('--embeddings_name', type=str, help='path to unlearn model')
 
-    parser.add_argument('--remain_reg', type=float, default=0, help='contribution of remain loss to add to total loss')
+    parser.add_argument('--remain_reg', type=float, default=1.0, help='contribution of remain loss to add to total loss')
 
     parser.add_argument('--good_forget', type=str, help='path to unlearn model with good forget acc')
     parser.add_argument('--good_remain', type=str, help='path to unlearn model with good remain acc')
@@ -126,6 +126,11 @@ def get_parameters():
                         help='How much extra protection entanglement buys a retain sample: its '
                              'alignment weight is 1 + strength * max(cos(z_retain, forget_centroid), 0). '
                              'Only used with --retain_entanglement_protection.')
+
+    parser.add_argument('--boundary_weight', type=float, default=1.0,
+                        help='weight on the boundary-shrink loss; 0 disables')
+    parser.add_argument('--gamma', type=float, default=0)
+    parser.add_argument('--lamda', type=float, default=0)
 
     # gamma_rep scales the combined contrastive/representation loss (CL+ES);
     # remain_reg (above) separately scales the plain retain cross-entropy loss.

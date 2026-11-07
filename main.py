@@ -181,6 +181,7 @@ def main(args):
             ain_eval_interval=args.ain_eval_interval,
             seed=args.seed,
             generate_tsne=args.tsne,
+            boundary_weight=args.boundary_weight,
         )
 
         if args.run_sota:
@@ -236,6 +237,7 @@ def main(args):
             unlearn_model, forget_acc, remain_acc, gear_time, test_acc, mia_score, retain_adjacent_acc, retain_remote_acc, ain_score, full_metrics = gear.gear(
                 ori_model, train_forget_loader, trainset, valset, val_loader, device,
                 test_metadata=val_dict, train_metadata=train_dict, output_name=save_me,
+                gamma=args.gamma, lamda=args.lamda,
                 **gear_kwargs
             )
             unlearn_model.to(device)
