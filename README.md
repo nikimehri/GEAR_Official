@@ -38,3 +38,15 @@ python baselines/baseline_main.py "${COMMON[@]}" --method bad_teacher --name bad
 
 python baselines/baseline_main.py "${COMMON[@]}" --method eval_orig --name retrain
 ```
+
+Codebase based on the code release by Nahass et al., 2025
+
+```bibtex
+@article{nahass2025targeted,
+  title={{Targeted Unlearning Using Perturbed Sign Gradient Methods With Applications On Medical Images}},
+  author={George R. Nahass and Zhu Wang and Homa Rashidisabet and Won Hwa Kim and Sasha Hubschman and Jeffrey C. Peterson and Pete Setabutr and Chad A. Purnell and Ann Tran and Darvin Yi and Sathya N. Ravi},
+  journal={Transactions on Machine Learning Research},
+  year={2025},
+  note={}
+}
+```
