@@ -90,12 +90,12 @@ def coun(model, layer, optimizer, retain_loader, transform, lambda_scale, temp):
             # Single-line deviation from Khalil et al. 2025 verbatim code: device argument added so intra_mask is on the GPU.
             target = torch.arange(batch_size, device=images.device).unsqueeze(0) #Contrastive learning using the two views of the embeddings
             intra_mask = (torch.eq(target, target.T).float())
-            cos_sim_ij = F.cosine_similarity(features1[:,None,:], features2[None,:,:], dim=-1)
+            # Same cosine similarities without batch x batch x dim intermediates.
+            cos_sim_ij = F.normalize(features1, dim=-1, eps=1e-8) @ F.normalize(features2, dim=-1, eps=1e-8).T
             cos_sim_ij = torch.div(cos_sim_ij, temp)
             log_prob_ij = cos_sim_ij - torch.log((torch.exp(cos_sim_ij)).sum(1, keepdim=True))
             mean_log_prob_pos_ij = (intra_mask * log_prob_ij).sum(1) / intra_mask.sum(1)
-            cos_sim_ji = F.cosine_similarity(features2[:,None,:], features1[None,:,:], dim=-1)
-            cos_sim_ji = torch.div(cos_sim_ji, temp)
+            cos_sim_ji = cos_sim_ij.T  # already divided by temp
             log_prob_ji = cos_sim_ji - torch.log((torch.exp(cos_sim_ji)).sum(1, keepdim=True))
             mean_log_prob_pos_ji = (intra_mask * log_prob_ji).sum(1) / intra_mask.sum(1)
             contrastive_loss = -(mean_log_prob_pos_ij.mean() + mean_log_prob_pos_ji.mean())
@@ -419,19 +419,6 @@ class DeviceLoader:
         return len(self.loader)
 
 
-def _set_bn_eval(model):
-    """Puts every BatchNorm layer into eval mode (frozen running stats)
-    while everything else stays in train mode - same rationale as
-    delete.py's _set_bn_eval. Particularly important here since
-    coun_unlearn's own batch_size (passed in via train_remain_loader_raw)
-    is shared with baseline_main.py's/hpo_search.py's global --batch_size
-    (default 8) rather than this file's own CLI default of 64 - BatchNorm
-    running stats are far noisier at that size."""
-    for module in model.modules():
-        if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
-            module.eval()
-
-
 def coun_unlearn(model, model_name, data_name, train_remain_loader_raw, device,
                   lambda_scale=1.0, temp=0.1, epochs=1, lr=0.01):
     """Thin wrapper around the coun() core update, for use from
@@ -443,10 +430,13 @@ def coun_unlearn(model, model_name, data_name, train_remain_loader_raw, device,
     train_remain_loader_raw must yield raw [0,1] (un-normalized) images -
     simclr_transform expects raw pixels and normalizes them itself (see
     get_coun_datasets' trainset_raw). Returns a new, unlearned copy of
-    model; model itself is not modified."""
+    model; model itself is not modified.
+
+    BatchNorm stays in train mode, matching the paper and run_seed().
+    Freezing its statistics caused activation overflow and NaN weights
+    under the SimCLR-augmented updates."""
     model = copy.deepcopy(model).to(device)
     model.train()
-    _set_bn_eval(model)
 
     optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-4)
@@ -461,6 +451,11 @@ def coun_unlearn(model, model_name, data_name, train_remain_loader_raw, device,
         coun(model, layer, optimizer, retain_loader_device, transform_fn,
              lambda_scale=lambda_scale, temp=temp)
         scheduler.step()
+
+    bad = [name for name, p in model.named_parameters() if not torch.isfinite(p).all()]
+    if bad:
+        raise FloatingPointError(f"CoUn diverged: {len(bad)} parameter tensors are non-finite "
+                                 f"(first: {bad[0]}). Refusing to return a NaN model.")
 
     model.eval()
     return model

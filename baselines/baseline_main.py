@@ -1,4 +1,5 @@
 import argparse
+import gc
 import time
 import numpy as np
 import torch
@@ -507,6 +508,14 @@ if __name__ == '__main__':
         full_train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
 
         for unlearn_type in methods_single:
+            # Release the previous method's models before loading the next one.
+            for _name in ('model', 'teacher', 'student', 'model_s', 'model_s_final', 'model_cfk', 'model_euk',
+                          'model_delete', 'model_ssd', 'model_coun', 'model_cu', 'model_cheng', 'model_salun',
+                          'model_bt', 'model0', 'model_orig_eval'):
+                globals().pop(_name, None)
+            gc.collect()
+            torch.cuda.empty_cache()
+
             readouts[unlearn_type] = {data_name: {}}
             model = load_model(model_type, num_classes=num_classes, data_name=data_name).to(device)
             model = load_model_state(model, orig_model_path)

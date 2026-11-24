@@ -71,7 +71,8 @@ from baselines.baseline_utils import set_num_classes  # noqa: E402
 # while the GPU runs the previous batch, instead of stalling on CPU-side
 # transform work every batch (every DataLoader here previously defaulted to
 # num_workers=0, i.e. fully synchronous).
-_NUM_WORKERS = int(os.environ.get('GEAR_NUM_WORKERS', min(8, os.cpu_count() or 4)))
+# Spawned Windows workers each load torch/CUDA and can exhaust host RAM.
+_NUM_WORKERS = int(os.environ.get('GEAR_NUM_WORKERS', 0 if os.name == 'nt' else min(8, os.cpu_count() or 4)))
 _PIN_MEMORY = torch.cuda.is_available()
 
 
@@ -237,10 +238,12 @@ def extract_features(model: nn.Module, loader: DataLoader, device: torch.device)
 
 def cache_path_for(cache_dir: str, checkpoint_path: str, split_name: str) -> str:
     """Cache key is the checkpoint's absolute path (so identically-named
-    checkpoints in different directories never collide) plus the split name.
-    A short hash keeps filenames bounded while staying human-readable via
-    the retained filename stem."""
-    key = hashlib.sha256(os.path.abspath(checkpoint_path).encode()).hexdigest()[:16]
+    checkpoints in different directories never collide), its size and mtime
+    (so overwritten checkpoints invalidate old features), plus the split name.
+    A short hash keeps filenames bounded while retaining the filename stem."""
+    st = os.stat(checkpoint_path)
+    ident = f"{os.path.abspath(checkpoint_path)}|{st.st_size}|{st.st_mtime_ns}"
+    key = hashlib.sha256(ident.encode()).hexdigest()[:16]
     stem = os.path.splitext(os.path.basename(checkpoint_path))[0]
     return os.path.join(cache_dir, f"{stem}_{key}_{split_name}.pt")
 
@@ -248,7 +251,7 @@ def cache_path_for(cache_dir: str, checkpoint_path: str, split_name: str) -> str
 def get_or_extract_features(model: nn.Module, loader: DataLoader, device: torch.device,
                              cache_dir: str, checkpoint_path: str, split_name: str):
     """Returns (features, labels) for this (checkpoint, split), using an
-    fp16-on-disk cache keyed by checkpoint path + split so reruns skip
+    fp16-on-disk cache keyed by checkpoint file + split so reruns skip
     extraction entirely. Cached features are upcast back to fp32 on load,
     matching extract_features' own return dtype so callers never need to
     know whether a result came from cache."""
@@ -259,7 +262,10 @@ def get_or_extract_features(model: nn.Module, loader: DataLoader, device: torch.
         return cached['features'].float(), cached['labels'].long()
 
     features, labels = extract_features(model, loader, device)
-    torch.save({'features': features.half(), 'labels': labels}, path)
+    # Publish only complete files so concurrent probes cannot read partial caches.
+    tmp_path = f"{path}.{os.getpid()}.tmp"
+    torch.save({'features': features.half(), 'labels': labels}, tmp_path)
+    os.replace(tmp_path, path)
     return features, labels
 
 
@@ -508,10 +514,12 @@ def main(argv=None):
     val_loader = DataLoader(splits.val, batch_size=args.extract_batch_size, shuffle=False, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
     test_loader = DataLoader(splits.test, batch_size=args.extract_batch_size, shuffle=False, num_workers=_NUM_WORKERS, pin_memory=_PIN_MEMORY, persistent_workers=_NUM_WORKERS > 0)
 
+    # These partitions depend on both seed and validation fraction.
+    split_tag = f"seed{args.seed}_val{args.val_fraction}"
     train_feats, train_labels = get_or_extract_features(
-        model, train_loader, device, args.cache_dir, args.checkpoint, 'train')
+        model, train_loader, device, args.cache_dir, args.checkpoint, f'train_{split_tag}')
     val_feats, val_labels = get_or_extract_features(
-        model, val_loader, device, args.cache_dir, args.checkpoint, 'val')
+        model, val_loader, device, args.cache_dir, args.checkpoint, f'val_{split_tag}')
     test_feats, test_labels = get_or_extract_features(
         model, test_loader, device, args.cache_dir, args.checkpoint, 'test')
 
